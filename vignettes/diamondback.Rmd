@@ -1,0 +1,419 @@
+---
+title: "Patch analysis with diamondback"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Patch analysis with diamondback}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+# The vignette needs the Python backend; skip cleanly on machines without it.
+has_python <- tryCatch({
+  diamondback::diamondback_python(quiet = TRUE); TRUE
+}, error = function(e) FALSE)
+knitr::opts_chunk$set(eval = has_python)
+```
+
+```{r setup, message = FALSE}
+library(diamondback)
+library(terra)
+```
+
+This vignette walks through a complete workflow: label patches in a landscape,
+measure them, calculate core area, and track what happens to them over time.
+
+Everything below runs on small synthetic rasters so the answers are checkable by
+eye. The whole point of the package is the same code path at 400 million cells.
+
+## Check the environment first
+
+diamondback runs its array kernels in NumPy and SciPy. Before a long job, make
+sure the whole path works — not just that the pieces are installed:
+
+```{r check}
+diamondback_check()
+```
+
+That runs a real labelling operation end to end. If it reports success,
+everything in this vignette will work.
+
+## A landscape
+
+A small forest raster with a study-area mask, some genuinely missing data, and
+30 m cells in an equal-area projection:
+
+```{r landscape}
+set.seed(42)
+
+forest <- rast(nrows = 60, ncols = 60, xmin = 0, xmax = 1800,
+               ymin = 0, ymax = 1800, crs = "EPSG:5070")
+values(forest) <- rbinom(ncell(forest), 1, 0.42)
+forest <- focal(forest, w = 5, fun = "mean", na.rm = TRUE)
+forest <- ifel(forest > 0.45, 1, 0)
+
+# A cloud of missing data: unknown, not absent.
+forest[20:24, 20:24] <- NA
+
+# The study area excludes a corner.
+study <- rast(forest)
+values(study) <- 1
+study[50:60, 50:60] <- 0
+
+plot(forest, main = "forest (1 = forest, 0 = not, NA = unknown)")
+```
+
+## Labelling
+
+`analyze_patches()` is the function to reach for: it labels and measures in one
+call, and caches the result if you give it an `output_dir`.
+
+```{r analyze}
+p1 <- analyze_patches(
+  forest,
+  class      = 1,
+  mask       = study,
+  directions = 8,
+  crop       = FALSE,
+  quiet      = TRUE
+)
+
+p1
+```
+
+Note what the print method leads with: the four cell states. This is the number
+to check first on real data, because the most common way this analysis goes
+wrong is a misclassified `NA`.
+
+### The four states
+
+diamondback never lets `NA` drift into foreground or background:
+
+```{r states}
+str(p1$metadata$cells)
+```
+
+Those four numbers always sum to the cell count. The labelled raster can only
+show three of them — a raster has one no-data value — but `patch_domain()`
+reconstructs the distinction:
+
+```{r domain}
+dom <- patch_domain(p1)
+plot(dom, main = "cell states")
+freq(dom)
+```
+
+`missing` is the cloud we punched in; `outside` is the masked corner. Both are
+`NA` in `p1$patches`, and neither ever became a patch.
+
+### Connectivity
+
+`directions = 8` joins diagonal neighbours, `4` does not. This is a real
+decision, not a detail:
+
+```{r connectivity}
+c(
+  eight = label_patches(forest, class = 1, mask = study, directions = 8,
+                        crop = FALSE, quiet = TRUE)$metadata$n_patches,
+  four  = label_patches(forest, class = 1, mask = study, directions = 4,
+                        crop = FALSE, quiet = TRUE)$metadata$n_patches
+)
+```
+
+Under the rook rule the same landscape has more, smaller patches. Whichever you
+pick, it is recorded in the metadata and it invalidates a cache built with the
+other.
+
+## Metrics
+
+```{r metrics}
+head(p1$metrics[, c("patch_id", "cells", "area_ha", "perimeter",
+                    "edge_valid", "edge_domain", "touches_domain_edge")])
+```
+
+### Reading the edge columns
+
+`perimeter` is the total length of shared cell edges between a patch and
+anything that is not that patch. Corner contact contributes nothing: two cells
+touching only at a corner share no physical boundary.
+
+It always splits into two parts:
+
+- **`edge_valid`** — boundary against a real, in-domain cell. The patch stops
+  here. This is habitat edge, the thing with ecological meaning.
+- **`edge_domain`** — boundary against a masked cell, a missing cell, or the
+  grid border. This is an artefact of where you drew the study area.
+
+```{r edge-sum}
+with(p1$metrics, all.equal(edge_valid + edge_domain, perimeter))
+```
+
+Patches flagged `touches_domain_edge` are cut off by the study area, so their
+area and perimeter are **lower bounds**:
+
+```{r edge-flag}
+table(p1$metrics$touches_domain_edge)
+
+# The usual move: analyse the size distribution on interior patches only.
+interior <- subset(p1$metrics, !touches_domain_edge)
+summary(interior$area_ha)
+```
+
+Ignoring that flag is how a clipped 500-hectare patch gets counted as a small
+one.
+
+## Core area
+
+Habitat more than a given distance from an edge, via one exact Euclidean
+distance transform:
+
+```{r core}
+p1 <- patch_core_area(p1, depth = 60, units = "m", quiet = TRUE)
+head(p1$metrics[, c("patch_id", "cells", "core_cells", "core_area_ha",
+                    "core_fraction")])
+```
+
+Distance is measured centre-to-centre, so with 30 m cells a `depth` of 60 m
+means a cell needs at least two cells of habitat between it and the nearest
+non-habitat cell.
+
+`edge = "background"` changes what counts as an edge — masked, missing and
+off-grid cells become habitat, so patches clipped by the study boundary are not
+penalised for it:
+
+```{r core-edge}
+strict <- patch_core_area(p1, depth = 60, edge = "all", quiet = TRUE)
+lenient <- patch_core_area(p1, depth = 60, edge = "background", quiet = TRUE)
+
+c(all = sum(strict$metrics$core_cells),
+  background = sum(lenient$metrics$core_cells))
+```
+
+Which is right depends on your study boundary. A coastline is a real edge; an
+arbitrary analytical cut through continuous forest is not.
+
+## Change over time
+
+A second time step: clearing cuts through the landscape.
+
+```{r time2}
+forest2 <- forest
+forest2[30:33, ] <- 0    # a road-like clearing
+forest2[10:14, 10:14] <- 0
+
+p2 <- analyze_patches(forest2, class = 1, mask = study, directions = 8,
+                      crop = FALSE, quiet = TRUE)
+
+change <- compare_patches(p1, p2, quiet = TRUE)
+change
+```
+
+`compare_patches()` validates that the two rasters share a CRS, extent,
+resolution, origin and dimensions. It will not resample silently — a half-cell
+offset would still produce a complete and entirely wrong overlap table.
+
+### Three tables, three questions
+
+**`$events`** answers "what happened to this patch?":
+
+```{r events}
+head(change$events[, c("time", "patch_id", "cells", "event", "n_links",
+                       "primary_id", "prop_primary")])
+
+table(change$events$event)
+```
+
+**`$overlaps`** is the raw evidence, with no lineage rule baked in:
+
+```{r overlaps}
+head(change$overlaps[, c("id1", "id2", "overlap_cells",
+                         "prop_t1_retained", "prop_t2_inherited",
+                         "rank_from_t1", "rank_from_t2")])
+```
+
+**`$lineages`** is one row per connected group of related patches, which is the
+honest unit when patches merge:
+
+```{r lineages}
+head(change$lineages)
+```
+
+### The mother patch, and not being stuck with it
+
+For each time-2 patch, `primary_id` is its mother: the time-1 patch that
+contributed the most overlapping cells. Ties break deterministically (larger
+patch, then lower ID) and are flagged:
+
+```{r ties}
+sum(change$events$primary_tie, na.rm = TRUE)
+```
+
+That default is a choice, and you are not stuck with it. `$overlaps` carries
+both directional proportions, so a different rule is a re-derivation rather than
+a re-run. For example, using *proportion of the time-1 patch retained* instead of
+absolute overlap:
+
+```{r alt-rule}
+ov <- change$overlaps
+alt <- do.call(rbind, lapply(split(ov, ov$id2), function(d) {
+  d[which.max(d$prop_t1_retained), c("id2", "id1", "prop_t1_retained")]
+}))
+head(alt)
+```
+
+### Thresholds
+
+By default every overlap counts, including a single incidental cell. That
+default keeps the evidence complete, but classification is sensitive to it: one
+shared cell is the difference between "the patch split" and "the patch
+persisted".
+
+```{r thresholds}
+loose  <- compare_patches(p1, p2, min_overlap_cells = 1, quiet = TRUE)
+strict <- compare_patches(p1, p2, min_overlap_prop = 0.05, quiet = TRUE)
+
+rbind(loose = table(factor(loose$events$event,
+                           levels = c("persistence", "split", "merger",
+                                      "complex", "appearance", "disappearance"))),
+      strict = table(factor(strict$events$event,
+                            levels = c("persistence", "split", "merger",
+                                       "complex", "appearance", "disappearance"))))
+```
+
+If your rasters are noisy, raise `min_overlap_prop`. diamondback reports how many
+links a threshold dropped rather than dropping them quietly.
+
+## A time series
+
+```{r series}
+forest3 <- forest2
+forest3[, 30:33] <- 0    # a second clearing, crosswise
+
+series <- track_patch_series(
+  list(forest, forest2, forest3),
+  time       = c(2000, 2010, 2020),
+  class      = 1,
+  mask       = study,
+  crop       = FALSE,
+  quiet      = TRUE
+)
+
+series$summary
+```
+
+Each transition is a pairwise comparison; `$transitions` stacks them all with
+`time_from` and `time_to` columns. This is deliberately not a global identity
+model — it is every consecutive transition, honestly labelled, which is enough
+to build most lineage analyses on.
+
+## Caching and reproducibility
+
+Give `analyze_patches()` an `output_dir` and results are written there and reused
+when the request matches:
+
+```{r caching}
+f <- file.path(tempdir(), "forest.tif")
+writeRaster(forest, f, overwrite = TRUE)
+d <- file.path(tempdir(), "derived_1")
+
+first <- analyze_patches(f, class = 1, output_dir = d, quiet = TRUE)
+second <- analyze_patches(f, class = 1, output_dir = d)   # a hit
+```
+
+A hit requires the *same computation*: source fingerprint, geometry, class,
+mask, connectivity, NA policy and algorithm version. Change one and it recomputes
+and names what differed:
+
+```{r cache-miss}
+third <- analyze_patches(f, class = 1, directions = 4, output_dir = d)
+```
+
+Metric options deliberately do **not** invalidate a labelling cache, because they
+cannot change the labels.
+
+The result on disk is three plain files — a GeoTIFF, a CSV and a JSON — readable
+without R or Python:
+
+```{r files}
+list.files(d)
+```
+
+Everything needed to reproduce the run is in the metadata:
+
+```{r repro}
+m <- read_patch_result(d)$metadata
+str(m[c("package_version", "algorithm_version", "directions", "na", "class")])
+str(m$backend)
+```
+
+## Validating
+
+```{r validate}
+validate_patch_result(p1)
+```
+
+These are independent re-derivations, not assertions restating the code: patch
+counts are recounted from the raster, foreground cells recounted from the cell
+states, sums compared, mask leakage checked, and edge components reconciled
+against perimeter. Worth running on the first real pass of any new pipeline.
+
+## Large rasters
+
+Before committing to a long job:
+
+```{r memory}
+db_memory_report(forest)
+```
+
+Labelling needs the array in RAM — that is `scipy.ndimage.label()`'s
+requirement. diamondback estimates the cost first and **errors before**
+allocating rather than dying partway:
+
+```{r memory-fail, error = TRUE}
+label_patches(forest, class = 1, memory_limit = 1000, quiet = TRUE)
+```
+
+Practical ways to stay under the ceiling:
+
+- pass a `mask` and leave `crop = TRUE` (the default), which shrinks the grid to
+  the study area before anything is allocated;
+- point `x` at a filename rather than an in-memory `SpatRaster`, so cells stream
+  blockwise into the NumPy array and are never an R matrix;
+- use `output_dir`, so a labelled raster is written once and never relabelled.
+
+## Geographic rasters
+
+Lon/lat grids are supported exactly, not approximated as planar. Cell area and
+east–west extent vary with latitude, so per-row geodesic geometry is used:
+
+```{r lonlat}
+g <- rast(nrows = 20, ncols = 20, xmin = 0, xmax = 20, ymin = 30, ymax = 50,
+          crs = "EPSG:4326")
+set.seed(7)
+values(g) <- rbinom(ncell(g), 1, 0.5)
+
+gl <- analyze_patches(g, quiet = TRUE)
+
+# Area agrees with terra::cellSize() to the digit.
+cs <- cellSize(g, unit = "m")
+c(diamondback = sum(gl$metrics$area_m2),
+  cellSize    = sum(values(cs)[values(g) == 1]))
+```
+
+The one exception is `patch_core_area()`: the distance transform assumes uniform
+cell spacing, which a lon/lat grid does not have. It errors rather than returning
+a plausible wrong number.
+
+```{r lonlat-core, error = TRUE}
+patch_core_area(gl, depth = 1000, quiet = TRUE)
+```
+
+Project to an equal-area CRS first.
+
+## Where to go next
+
+- `?label_patches` — the full account of cell states and `NA` handling
+- `?patch_metrics` — exactly what perimeter measures
+- `?compare_patches` — event classification and lineage rules
+- `DESIGN.md` in the package source — the architecture and every design decision

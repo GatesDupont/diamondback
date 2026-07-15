@@ -47,3 +47,14 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Python bytecode from the bundled backend module
+inst/python/__pycache__/
+*.pyc
+
+# knitr artefacts from ad-hoc vignette runs
+/figure/
+
+# R CMD check/build artefacts
+/*.Rcheck/
+/*.tar.gz

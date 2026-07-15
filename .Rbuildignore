@@ -1,0 +1,10 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.github$
+^\.claude$
+^DESIGN\.md$
+^LICENSE\.md$
+^\.Rhistory$
+^diamondback\.Rcheck$
+^diamondback_.*\.tar\.gz$
+^inst/python/__pycache__$

@@ -1,0 +1,38 @@
+Package: diamondback
+Title: Fast Patch-Based Analysis of Very Large Categorical Rasters
+Version: 0.1.0
+Authors@R:
+    person("Gates", "Dupont", , "dupont97@gmail.com", role = c("aut", "cre"))
+Description: Connected-component labelling, patch metrics, core-area
+    calculation and temporal patch lineage analysis for categorical and binary
+    rasters with hundreds of millions of cells. Raster input/output, geometry
+    and validation stay in R via 'terra'; the array kernels are delegated to
+    NumPy and SciPy through 'reticulate', which is typically far faster than
+    pure-R connected-component labelling on large grids. Includes explicit
+    handling of missing values and study-area masks, memory estimation before
+    allocation, result caching keyed on input fingerprints, and validation of
+    results against independent checks.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.1)
+Imports:
+    cli (>= 3.4.0),
+    digest,
+    jsonlite,
+    reticulate (>= 1.41.0),
+    stats,
+    terra (>= 1.7.0),
+    tools,
+    utils
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    withr
+Config/testthat/edition: 3
+VignetteBuilder: knitr
+URL: https://github.com/GatesDupont/diamondback
+BugReports: https://github.com/GatesDupont/diamondback/issues
