@@ -9,10 +9,26 @@
 # what looks like a test run. diamondback_install_python() is covered by its own
 # CI job instead.
 skip_if_no_python <- function() {
+  err <- NULL
   ok <- tryCatch({
     diamondback_python(quiet = TRUE)
     TRUE
-  }, error = function(e) FALSE)
+  }, error = function(e) {
+    err <<- conditionMessage(e)
+    FALSE
+  })
+
+  # Skipping is the right answer on a contributor's laptop and the wrong one on
+  # CI, where every test skipping would still be a green tick. When
+  # DIAMONDBACK_REQUIRE_BACKEND is set the environment is promising a backend,
+  # so its absence is a failure rather than a shrug.
+  if (!ok && nzchar(Sys.getenv("DIAMONDBACK_REQUIRE_BACKEND"))) {
+    stop("DIAMONDBACK_REQUIRE_BACKEND is set, so the Python backend was expected ",
+         "to be available, but it is not. RETICULATE_PYTHON=",
+         encodeString(Sys.getenv("RETICULATE_PYTHON"), quote = '"'),
+         ". Original error: ", err %||% "(none)")
+  }
+
   testthat::skip_if_not(
     ok,
     paste("Python backend (NumPy + SciPy) not available.",
@@ -20,6 +36,8 @@ skip_if_no_python <- function() {
           "or run diamondback_install_python().")
   )
 }
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
 
 # A projected raster with 10 m square cells, built from a matrix so that tests
 # can state the expected answer as a picture.

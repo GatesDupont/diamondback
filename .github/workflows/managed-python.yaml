@@ -40,12 +40,19 @@ jobs:
         with:
           needs: check
 
+      # setup-r-dependencies installs dependencies, not the package. Install it
+      # properly so that library(diamondback) works below; load_all() would need
+      # pkgload, which is not here, and would test the source tree rather than
+      # what a user installs.
+      - name: Install diamondback
+        run: R CMD INSTALL .
+
       # Deliberately no setup-python and no pip install: this job starts with
       # whatever the runner has, which is a Python without SciPy.
       - name: Confirm the runner has no usable backend
         run: |
           Rscript -e '
-            pkgload::load_all(".", quiet = TRUE)
+            library(diamondback)
             mode <- diamondback:::db_python_mode()
             cat("resolved mode:", mode, "\n")
             if (mode != "none") {
@@ -63,7 +70,7 @@ jobs:
       - name: diamondback_install_python()
         run: |
           Rscript -e '
-            pkgload::load_all(".", quiet = TRUE)
+            library(diamondback)
             # prompt = FALSE is the scripted opt-in: an explicit statement that
             # the download is expected here.
             ok <- diamondback::diamondback_install_python(prompt = FALSE)
@@ -72,7 +79,7 @@ jobs:
       - name: Verify the managed environment works end to end
         run: |
           Rscript -e '
-            pkgload::load_all(".", quiet = TRUE)
+            library(diamondback)
             chk <- diamondback::diamondback_check()
             stopifnot(isTRUE(chk$ok), identical(chk$mode, "managed"))
             cat("managed backend OK:", chk$python, chk$numpy, chk$scipy, "\n")'
@@ -80,7 +87,7 @@ jobs:
       - name: Verify consent can be revoked
         run: |
           Rscript -e '
-            pkgload::load_all(".", quiet = TRUE)
+            library(diamondback)
             stopifnot(isTRUE(diamondback::diamondback_remove_python()))
             stopifnot(!file.exists(diamondback:::db_consent_file()))
             cat("consent revoked cleanly\n")'

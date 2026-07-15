@@ -76,11 +76,24 @@ jobs:
           extra-packages: any::rcmdcheck
           needs: check
 
-      # A green check here would be meaningless if the tests had quietly skipped
-      # for want of a backend, so fail loudly instead.
-      - name: Verify diamondback sees the provisioned backend
+      # Confirm that the interpreter installed above is the one R will actually
+      # reach for. This deliberately does not mention diamondback: the package is
+      # not installed yet at this point (setup-r-dependencies installs its
+      # dependencies; check-r-package installs the package itself, later), and an
+      # earlier version of this step called diamondback::diamondback_check()
+      # here and failed on every platform with "there is no package called
+      # 'diamondback'". reticulate is present, because diamondback Imports it.
+      - name: Verify R can see the provisioned Python
+        shell: Rscript {0}
         run: |
-          Rscript -e 'chk <- diamondback::diamondback_check(); if (!isTRUE(chk$ok)) stop("backend not usable: ", chk$error)'
+          py <- Sys.getenv("RETICULATE_PYTHON")
+          if (!nzchar(py)) stop("RETICULATE_PYTHON is not set; the provisioning step did not take effect")
+          if (!file.exists(py)) stop("RETICULATE_PYTHON points at a file that does not exist: ", py)
+          reticulate::use_python(py, required = TRUE)
+          cat("R will use:", reticulate::py_config()$python, "\n")
+          np <- reticulate::import("numpy")
+          sp <- reticulate::import("scipy")
+          cat("numpy", np$`__version__`, "| scipy", sp$`__version__`, "\n")
         env:
           RETICULATE_PYTHON: ${{ env.RETICULATE_PYTHON }}
 
@@ -90,3 +103,9 @@ jobs:
           build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
         env:
           RETICULATE_PYTHON: ${{ env.RETICULATE_PYTHON }}
+          # The real guard against a hollow green tick. diamondback's tests skip
+          # when no backend is available, which is right on a contributor's
+          # laptop and wrong here: a run where every test skipped would pass. This
+          # turns that skip into a failure, and it works because it is read inside
+          # the test suite, where the package *is* installed.
+          DIAMONDBACK_REQUIRE_BACKEND: "true"
