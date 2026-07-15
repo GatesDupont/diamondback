@@ -49,9 +49,10 @@ test_that("more than 253 classes works via a wider code array", {
   m <- matrix(seq_len(n), nrow = 20, ncol = 15)
   r <- rast_from(m, res = 1)
 
-  res <- label_patches(r, class = seq_len(n), quiet = TRUE)
+  # as.list(): 300 separate classes. seq_len(n) would be one class of 300 values.
+  res <- label_patches(r, class = as.list(seq_len(n)), quiet = TRUE)
   expect_equal(res$metadata$n_patches, n)
-  expect_equal(sort(unique(res$metrics$class)), seq_len(n))
+  expect_equal(sort(as.numeric(unique(res$metrics$class))), seq_len(n))
   expect_equal(sum(res$metrics$cells), n)
   expect_true(validate_patch_result(res, quiet = TRUE)$ok)
 })
@@ -75,7 +76,7 @@ test_that("the memory estimate accounts for the wider code array", {
 test_that("too many classes is rejected with a clear limit", {
   skip_if_no_python()
   expect_error(
-    label_patches(matrix(1, 2, 2), class = seq_len(70000), quiet = TRUE),
+    label_patches(matrix(1, 2, 2), class = as.list(seq_len(70000)), quiet = TRUE),
     "at most"
   )
 })

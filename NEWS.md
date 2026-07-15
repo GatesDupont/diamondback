@@ -2,6 +2,18 @@
 
 First release.
 
+## Breaking
+
+* **`class` semantics changed.** One element of `class` is now one class:
+  `class = c(41, 42, 43)` is a *single* class made of those three values,
+  connected across the boundaries between them. Several separately labelled
+  classes come from a list: `class = list(forest = c(41,42,43), wetland = c(90,95))`.
+  Previously a numeric vector meant N separate classes, which left no way to
+  express a grouped class and forced a hand-rolled binary raster --
+  `ifel(x %in% classes, 1, 0)` -- which silently turns `NA` into background.
+  `algorithm_version` is bumped, so caches written under the old meaning are
+  correctly invalidated rather than reused.
+
 ## Core
 
 * `label_patches()` — connected-component labelling via `scipy.ndimage.label()`,
@@ -33,9 +45,15 @@ First release.
 
 ## Safety
 
-* Memory is estimated before allocation; operations error *before* an
-  allocation that will not fit, and `db_memory_report()` reports the cost of a
-  raster without doing any work.
+* Memory is estimated before allocation. A **hard stop only when the job cannot
+  fit in physical RAM**; when memory is merely tight, diamondback warns that it
+  will page and runs anyway. Availability cannot be known, and a false refusal
+  costs more than a warning. `db_memory_report()` reports the cost of a raster
+  without doing any work.
+* `patch_core_area()` runs the distance transform in **row strips**, so it works
+  on rasters far larger than a full-array float64 distance grid would allow (a
+  724M-cell BCR needed 8.8 GB before; it now runs in ~6 bytes/cell). The result
+  is identical to the full-array transform, and the test suite asserts it.
 * Raster cells are read blockwise straight into a `uint8` NumPy array, so a
   raster is never materialised as an R numeric matrix.
 * `terra::tmpFiles(remove = TRUE)` is never called. Only files diamondback

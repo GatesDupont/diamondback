@@ -35,6 +35,16 @@
 #' not have. This function errors on lon/lat unless `units = "cells"`. Project to
 #' an equal-area CRS first.
 #'
+#' @section Large rasters:
+#' The transform runs in row strips with a halo of `ceil(depth / cell size)`
+#' rows, which is what lets it run on rasters far larger than a full-array
+#' float64 distance grid would allow. The result is **identical** to the
+#' full-array transform, not an approximation: a halo that wide is guaranteed to
+#' contain every source that could put a cell within `depth`, and any source it
+#' cannot see could only push the distance further above the threshold. The
+#' equivalence is asserted in the test suite on rasters small enough to compute
+#' both ways.
+#'
 #' @param x A [patch_result], or a labelled `SpatRaster`.
 #' @param depth Edge depth. In map units unless `units = "cells"`.
 #' @param units Units of `depth` and of the returned core area columns: `"m"`
@@ -42,9 +52,10 @@
 #' @param edge What counts as an edge source: `"all"` or `"background"`.
 #' @param core_raster Also return a raster of core cells, as
 #'   `result$core_raster`, labelled with patch IDs and `0` elsewhere.
-#' @param max_memory_frac,memory_limit Memory guards. The distance transform
-#'   holds a float64 array, making this the most memory-hungry step in the
-#'   package (roughly 13 bytes per cell).
+#' @param max_memory_frac,memory_limit Memory guards, as in [label_patches()].
+#'   The distance transform runs in row strips, so it costs roughly one byte per
+#'   cell on top of the labels rather than the eight a full-array float64
+#'   transform would need.
 #' @param quiet Suppress progress reporting.
 #'
 #' @return The [patch_result] with `core_cells`, `core_area_m2`, `core_area_ha`,
@@ -66,7 +77,7 @@ patch_core_area <- function(x,
                             units = c("m", "km", "cells"),
                             edge = c("all", "background"),
                             core_raster = FALSE,
-                            max_memory_frac = 0.6,
+                            max_memory_frac = 0.9,
                             memory_limit = NULL,
                             quiet = FALSE) {
   units <- match.arg(units)
@@ -127,7 +138,8 @@ patch_core_area <- function(x,
   for (k in seq_len(n_classes)) {
     out <- py_try(
       py$core_counts(st$code, st$labels, as.integer(n), as.integer(k - 1L),
-                     depth_map, reticulate::tuple(sampling[1], sampling[2]), edge),
+                     depth_map, reticulate::tuple(sampling[1], sampling[2]), edge,
+                     want_mask = isTRUE(core_raster)),
       "computing the distance transform"
     )
     core_count <- core_count + py_num(out, "core_count")[-1]

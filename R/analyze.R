@@ -67,7 +67,7 @@ analyze_patches <- function(x,
                             edge_depth = NULL,
                             fingerprint = c("auto", "full", "fast"),
                             overwrite = FALSE,
-                            max_memory_frac = 0.6,
+                            max_memory_frac = 0.9,
                             memory_limit = NULL,
                             validate = FALSE,
                             quiet = FALSE) {

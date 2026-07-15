@@ -6,8 +6,40 @@
 # `code_bytes` accounts for the extra byte.
 #   label   : code (1) + boolean foreground (1) + int32 labels (4)
 #   metrics : code (1) + labels (4), plus chunk-sized temporaries
-#   core    : code (1) + labels (4) + float64 EDT distances (8)
-BYTES_PER_CELL <- c(label = 6, metrics = 5, core = 13)
+#   core    : code (1) + labels (4), plus a bounded row strip. The full-array
+#             float64 distance grid that used to make this 13 bytes/cell is gone;
+#             the transform is tiled, so the distances never exist all at once.
+BYTES_PER_CELL <- c(label = 6, metrics = 5, core = 6)
+
+#' Total physical memory in bytes
+#'
+#' The denominator for "could this ever fit". Distinct from
+#' `db_available_memory()`, which answers "is it free *right now*" -- a much
+#' smaller and much more volatile number, and the wrong one to refuse work over.
+#' @noRd
+db_physical_memory <- function() {
+  sys <- Sys.info()[["sysname"]]
+  val <- tryCatch({
+    if (identical(sys, "Darwin")) {
+      as.numeric(system2("sysctl", c("-n", "hw.memsize"), stdout = TRUE))
+    } else if (identical(sys, "Linux")) {
+      mi <- readLines("/proc/meminfo", warn = FALSE)
+      line <- grep("^MemTotal:", mi, value = TRUE)
+      if (!length(line)) return(NA_real_)
+      as.numeric(gsub("[^0-9]", "", line[1])) * 1024
+    } else if (identical(sys, "Windows")) {
+      out <- system2("wmic", c("ComputerSystem", "get", "TotalPhysicalMemory", "/Value"),
+                     stdout = TRUE)
+      line <- grep("TotalPhysicalMemory", out, value = TRUE)
+      if (!length(line)) return(NA_real_)
+      as.numeric(gsub("[^0-9]", "", line[1]))
+    } else {
+      NA_real_
+    }
+  }, error = function(e) NA_real_, warning = function(w) NA_real_)
+
+  if (!is.numeric(val) || length(val) != 1 || is.na(val) || val <= 0) NA_real_ else val
+}
 
 #' Detect available system memory in bytes
 #'
@@ -73,23 +105,35 @@ db_estimate_memory <- function(ncell, stage = "label", code_bytes = 1) {
   as.numeric(ncell) * (BYTES_PER_CELL[[stage]] + (code_bytes - 1))
 }
 
-#' Stop before an allocation that will not fit
+#' Refuse only what cannot work; warn about the rest
 #'
-#' Errors *before* anything is allocated, naming the estimate, the ceiling, and
-#' the ways out. Never guesses: if available memory cannot be detected, this
-#' warns at an absolute threshold rather than blocking work.
+#' Memory availability cannot be known, so this does not pretend to. It answers
+#' two different questions with two different numbers:
+#'
+#' * **Can this fit at all?** Compared against *physical* RAM. Only this may
+#'   refuse, because only this is structural: no amount of closing browser tabs
+#'   makes a 40 GB array fit in 8 GB.
+#' * **Will it be comfortable?** Compared against *currently free* memory. This
+#'   may only warn. The OS reclaims, compresses and pages; free memory is a
+#'   snapshot, not a budget.
+#'
+#' The first design refused whenever the estimate exceeded a fraction of free
+#' memory, and had it backwards: on macOS it read 1.7 GB free on an 8 GB machine
+#' and would have blocked a 4 GB job that runs there routinely. A false refusal
+#' costs the whole analysis; a warning costs only attention.
 #'
 #' @param ncell Cells to be held in memory.
 #' @param stage Stage name, used for the per-cell cost and the message.
-#' @param max_memory_frac Fraction of available RAM that may be used.
-#' @param memory_limit Explicit ceiling in bytes, overriding detection.
+#' @param max_memory_frac Fraction of *physical* RAM above which to hard-stop.
+#' @param memory_limit Explicit ceiling in bytes, replacing physical RAM.
 #' @noRd
-db_check_memory <- function(ncell, stage = "label", max_memory_frac = 0.6,
+db_check_memory <- function(ncell, stage = "label", max_memory_frac = 0.9,
                             memory_limit = NULL, quiet = FALSE, code_bytes = 1) {
   need <- db_estimate_memory(ncell, stage, code_bytes)
 
-  avail <- if (!is.null(memory_limit)) as.numeric(memory_limit) else db_available_memory()
-  ceiling_bytes <- if (is.na(avail)) NA_real_ else avail * max_memory_frac
+  physical <- if (!is.null(memory_limit)) as.numeric(memory_limit) else db_physical_memory()
+  free <- db_available_memory()
+  hard <- if (is.na(physical)) NA_real_ else physical * max_memory_frac
 
   if (!quiet) {
     cli::cli_alert_info(
@@ -98,32 +142,44 @@ db_check_memory <- function(ncell, stage = "label", max_memory_frac = 0.6,
     )
   }
 
-  if (is.na(ceiling_bytes)) {
+  # The only refusal: it cannot fit even with the machine to itself.
+  if (!is.na(hard) && need > hard) {
+    cli::cli_abort(c(
+      "This operation needs about {db_fmt_bytes(need)}, more than this machine has.",
+      "x" = "{stage} needs roughly {BYTES_PER_CELL[[stage]] + code_bytes - 1} bytes per \\
+             cell for {.val {format(ncell, big.mark = ',')}} cells.",
+      "i" = "Physical memory is {db_fmt_bytes(physical)}; the ceiling is \\
+             {max_memory_frac} of that ({db_fmt_bytes(hard)}).",
+      "*" = "Crop or mask to a smaller analysis domain (the usual answer).",
+      "*" = "Raise {.arg max_memory_frac}, or set {.arg memory_limit}, if you know better.",
+      "i" = "This is a structural limit, not a guess about what is free right now."
+    ), class = "diamondback_memory_error", call = NULL)
+  }
+
+  if (is.na(physical)) {
     if (need > 8 * 1024^3) {
       cli::cli_warn(c(
-        "Could not detect available memory, and this operation needs about {db_fmt_bytes(need)}.",
+        "Could not detect physical memory, and this needs about {db_fmt_bytes(need)}.",
         "i" = "If it fails, crop or mask to a smaller domain, or set {.arg memory_limit}."
       ))
     }
     return(invisible(need))
   }
 
-  if (need > ceiling_bytes) {
-    cli::cli_abort(c(
-      "This operation needs about {db_fmt_bytes(need)}, which exceeds the safe limit of {db_fmt_bytes(ceiling_bytes)}.",
-      "x" = "{stage} needs roughly {BYTES_PER_CELL[[stage]]} bytes per cell for \\
-             {.val {format(ncell, big.mark = ',')}} cells.",
-      "i" = "Detected {db_fmt_bytes(avail)} available; the limit is {max_memory_frac} of that.",
-      "*" = "Crop or mask to a smaller analysis domain (the usual answer).",
-      "*" = "Raise {.arg max_memory_frac} if you know the estimate is pessimistic.",
-      "*" = "Set {.arg memory_limit} to override memory detection entirely."
-    ), class = "diamondback_memory_error", call = NULL)
-  }
-
-  if (need > ceiling_bytes * 0.5 && !quiet) {
-    cli::cli_alert_warning(
-      "This will use a large share of available memory ({db_fmt_bytes(need)} of {db_fmt_bytes(avail)})."
-    )
+  if (!quiet) {
+    if (!is.na(free) && need > free) {
+      # Not a problem, just slow: the OS will page. Worth saying, because a run
+      # that suddenly takes ten times longer is otherwise a mystery.
+      cli::cli_alert_warning(
+        "This needs {db_fmt_bytes(need)} but only {db_fmt_bytes(free)} is free right \\
+         now, so expect paging and a slower run. Closing other applications would help."
+      )
+    } else if (need > physical * 0.5) {
+      cli::cli_alert_warning(
+        "This will use a large share of this machine's memory \\
+         ({db_fmt_bytes(need)} of {db_fmt_bytes(physical)})."
+      )
+    }
   }
   invisible(need)
 }

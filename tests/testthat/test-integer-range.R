@@ -61,7 +61,7 @@ test_that("the label array dtype widens with cell count, not patch count", {
   # cell, so patch IDs cannot exceed the cell count.
   py <- diamondback:::db_py()
   code <- py$code_block(as.numeric(c(1, 0, 0, 1)), 2L, 2L, mask = NULL,
-                        class_values = NULL, n_classes = 1L)
+                        class_groups = NULL, n_classes = 1L)
 
   small <- py$label_array(code, 0L, 8L, FALSE)
   expect_equal(py_r(py_get(small, "labels")$dtype$name), "int32")
@@ -77,7 +77,7 @@ test_that("an int64 label array still returns int32 cells to R", {
   skip_if_not(diamondback_ready())
   py <- diamondback:::db_py()
   code <- py$code_block(as.numeric(c(1, 0, 0, 1)), 2L, 2L, mask = NULL,
-                        class_values = NULL, n_classes = 1L)
+                        class_groups = NULL, n_classes = 1L)
   lab <- py_get(py$label_array(code, 0L, 8L, TRUE), "labels")
   rows <- py$output_rows(lab, code, 0L, 2L, FALSE)
   expect_equal(py_r(rows$dtype$name), "int32")
@@ -140,7 +140,7 @@ test_that("overlap cross-tabulation refuses counts that would overflow its key",
   # silently it raises, and that surfaces as a diamondback error.
   py <- diamondback:::db_py()
   code <- py$code_block(as.numeric(c(1, 0, 0, 1)), 2L, 2L, mask = NULL,
-                        class_values = NULL, n_classes = 1L)
+                        class_groups = NULL, n_classes = 1L)
   lab <- py_get(py$label_array(code, 0L, 8L, FALSE), "labels")
   expect_error(
     py_try(py$overlap_counts(lab, lab, 4e9, 4e9), "cross-tabulating"),

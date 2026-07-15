@@ -211,16 +211,61 @@ The one place this fails is `patch_core_area()`: the Euclidean distance transfor
 needs uniform sampling, which a lon/lat grid does not have. That function errors
 on lon/lat unless `units = "cells"` is given explicitly.
 
-**10. Memory ceiling and failure behaviour?** Estimated before allocation, from
-cell count and dtype, and compared against detected available RAM. Above
-`max_memory_frac` (default 0.6) the operation **errors before allocating**, naming
-the estimate, the ceiling and the overrides. Peak cost is roughly:
+## 4c. The tiled distance transform
+
+A full-array `distance_transform_edt` holds a float64 distance per cell. At
+724M cells that is 5.8 GB on top of the labels, and `patch_core_area()` simply
+could not run on the rasters this package exists for — the first real 300 m
+core-area analysis needed 8.8 GB on an 8 GB machine.
+
+It now runs in **row strips**, and the result is *identical*, not approximate.
+Strips span the full width, so there is no column halo and both vertical edges of
+every strip are true grid borders — a real simplification, not a shortcut.
+
+Each strip gets a halo of `ceil(depth / yres)` rows. For a cell in the strip
+interior:
+
+- if its true distance to a source is ≤ `depth`, that source is within `depth`,
+  hence within the halo, hence inside the window: the windowed transform returns
+  the true distance;
+- if its true distance is > `depth`, the windowed transform sees a subset of the
+  sources and can only return a *larger* value, which is still > `depth`.
+
+So `dist > depth` gives the full-array answer either way. This holds **only
+because the test is a threshold**: the distances themselves are not trustworthy
+beyond the halo, and are never returned.
+
+The other half is padding. Only sides that are a true grid border are padded, by
+exactly the one ring the full-array version used. Interior strip seams take real
+data as their halo and are never padded — padding them would invent sources and
+report cells as edge-affected when they are not. The test suite asserts tiled ==
+full-array across depths, both edge modes and anisotropic cells, with the strip
+budget forced small enough that a 60-row raster crosses many seams.
+
+**10. Memory ceiling and failure behaviour?** Two questions, two numbers, and
+only one of them may refuse.
+
+- **Can this fit at all?** Compared against *physical* RAM. Above
+  `max_memory_frac` (default 0.9) the operation errors before allocating. This
+  is the only hard stop, because it is the only structural one: no amount of
+  closing applications makes a 40 GB array fit in 8 GB.
+- **Will it be comfortable?** Compared against *currently free* memory. This may
+  only warn.
+
+The first design refused whenever the estimate exceeded a fraction of *free*
+memory, and had it backwards. On macOS `free + inactive + speculative` read
+1.7 GB on an 8 GB machine, so a 4 GB job that the previous bespoke pipeline ran
+routinely would have been blocked. Memory availability cannot be known --
+the OS reclaims, compresses and pages -- so the guard does not pretend to know
+it. A false refusal costs the whole analysis; a warning costs only attention.
+
+Peak cost is roughly:
 
 | step | bytes/cell |
 |---|---|
 | labeling | ~6 (code 1 + bool 1 + int32 labels 4) |
 | metrics | ~5 (chunked; no full-array temporaries) |
-| core area | ~10 (float64 EDT distances dominate) |
+| core area | ~6 (code 1 + labels 4; the transform is tiled) |
 
 **11. R vs Python?** See §2. One implementation detail is load-bearing enough to
 state here: the backend module is imported with **`convert = FALSE`**. With
@@ -264,6 +309,24 @@ and the results are bit-for-bit reproducible. `scipy.ndimage.label()`,
 the result or the runtime — there is no thread-count-dependent reduction order to
 perturb the arithmetic. Parallelism would have to come from a different labelling
 backend (§6), not from tuning environment variables.
+
+**Grouped classes: one element of `class` is one class.** A numeric vector is one
+class made of several raster values (`class = c(41, 42, 43)` is *forest*,
+connected across the boundaries between deciduous, evergreen and mixed); a list
+is several classes (`class = list(forest = c(41,42,43), wetland = c(90,95))`).
+
+The original design made a vector mean *N separate classes*, which was
+inconsistent — `class = 1` gave one class, `class = c(1, 2)` gave two, so the
+argument's arity silently changed its meaning — and, worse, left no way to say
+"these values are one thing". Users then had to build a binary raster by hand
+first, and `ifel(x %in% classes, 1, 0)` sends NA to 0: the exact error this
+package exists to prevent, introduced upstream of it. The first real analysis hit
+this within an hour. Grouping removes the reclassification step entirely.
+
+A value may belong to only one class (a cell has one code, so membership in two
+has no consistent answer). Duplicates *within* a group are harmless and are
+normalised away. Unnamed groups are labelled by their values (`"41+42+43"`),
+which is stable and says what the class is; `"class_2"` would not.
 
 **The class limit.** Classes are encoded as `3 + k` in the cell-state array, so
 the ceiling is the dtype: 253 classes in `uint8`, 65,533 in `uint16`. Version 1

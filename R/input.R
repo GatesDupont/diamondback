@@ -225,31 +225,102 @@ db_row_geometry <- function(r) {
   )
 }
 
-#' Validate and normalise the `class` argument
+#' Validate and normalise the `class` argument into groups
+#'
+#' The rule is: **one element of `class` is one class**. A numeric vector is one
+#' class made of several raster values; a list is several classes. That makes
+#' the argument's arity mean something, and it is what lets a user say
+#' "41, 42 and 43 are all forest" without first building a lossy binary raster
+#' by hand -- which is where NA gets destroyed.
+#'
+#' Returns `NULL` (binary), the string `"all"` (resolved later), or a canonical
+#' list with `groups` (list of sorted unique numeric vectors) and `labels`
+#' (character, one per group).
 #' @noRd
 db_check_class <- function(class, x) {
   if (is.null(class)) return(NULL)
   if (identical(class, "all")) return("all")
-  # Check for NA before checking the type: a bare `class = NA` is logical, and
-  # "must be numeric" would be a much less useful thing to tell that user than
-  # "NA is not a class".
-  if (anyNA(class)) {
+
+  # A bare `class = NA` is logical, and "must be numeric" would be a far less
+  # useful thing to say than "NA is not a class".
+  if (!is.list(class) && anyNA(class)) return(db_class_na_error())
+
+  groups <- if (is.list(class)) class else list(class)
+  labels <- names(groups)
+
+  if (!length(groups)) {
+    cli::cli_abort("{.arg class} is empty; give at least one class.", call = NULL)
+  }
+
+  for (k in seq_along(groups)) {
+    g <- groups[[k]]
+    who <- if (!is.null(labels) && nzchar(labels[k])) {
+      sprintf("group %s", encodeString(labels[k], quote = '"'))
+    } else {
+      sprintf("group %d", k)
+    }
+    if (is.null(g) || length(g) == 0) {
+      cli::cli_abort(c(
+        "{.arg class}: {who} is empty.",
+        "i" = "Every class needs at least one raster value."
+      ), call = NULL)
+    }
+    if (anyNA(g)) return(db_class_na_error(who))
+    if (!is.numeric(g)) {
+      cli::cli_abort(c(
+        "{.arg class}: {who} must be numeric.",
+        "x" = "Got {.cls {class(g)[1]}}.",
+        "i" = 'Use a numeric vector for one class, a named list for several, \\
+               or {.val "all"}.'
+      ), call = NULL)
+    }
+    # Duplicates within a group are harmless -- 41 twice is still forest -- so
+    # they are normalised away rather than treated as an error.
+    groups[[k]] <- sort(unique(as.numeric(g)))
+  }
+
+  # Across groups they are not harmless: a value can only carry one code, so
+  # asking for it in two classes has no consistent answer.
+  all_vals <- unlist(groups, use.names = FALSE)
+  if (anyDuplicated(all_vals)) {
+    dup <- unique(all_vals[duplicated(all_vals)])
     cli::cli_abort(c(
-      "{.arg class} contains {.val NA}.",
-      "i" = "{.val NA} marks missing data in diamondback and can never be a patch class.",
-      "i" = 'To treat {.val NA} as background, use {.code na = "background"}.'
+      "{.arg class}: value{?s} {.val {dup}} appear{?s/} in more than one class.",
+      "x" = "Each raster value can belong to only one class.",
+      "i" = "A cell has a single code, so it cannot be both."
     ), call = NULL)
   }
-  if (!is.numeric(class)) {
+
+  labels <- db_class_labels(groups, labels)
+  list(groups = groups, labels = labels)
+}
+
+db_class_na_error <- function(who = NULL) {
+  cli::cli_abort(c(
+    if (is.null(who)) "{.arg class} contains {.val NA}." else "{.arg class}: {who} contains {.val NA}.",
+    "i" = "{.val NA} marks missing data in diamondback and can never be a patch class.",
+    "i" = 'To treat {.val NA} as background, use {.code na = "background"}.'
+  ), call = NULL)
+}
+
+#' Stable, readable labels for class groups
+#'
+#' Named groups keep their names. Unnamed ones are named from their values
+#' ("41+42+43"), which is stable across runs and tells the reader what the class
+#' actually is rather than "class_2".
+#' @noRd
+db_class_labels <- function(groups, labels) {
+  from_values <- vapply(groups, function(g) paste(g, collapse = "+"), character(1))
+  if (is.null(labels)) return(from_values)
+  labels <- ifelse(is.na(labels) | !nzchar(labels), from_values, labels)
+  if (anyDuplicated(labels)) {
+    dup <- unique(labels[duplicated(labels)])
     cli::cli_abort(c(
-      '{.arg class} must be numeric, {.val NULL} (binary), or {.val "all"}.',
-      "x" = "Got {.cls {class(class)[1]}}."
+      "{.arg class}: duplicate class name{?s} {.val {dup}}.",
+      "i" = "Class names label the rows of {.code $metrics}, so they must be distinct."
     ), call = NULL)
   }
-  if (anyDuplicated(class)) {
-    cli::cli_abort("{.arg class} contains duplicate values.", call = NULL)
-  }
-  as.numeric(class)
+  labels
 }
 
 #' Resolve `class = "all"` into the actual values present
@@ -279,7 +350,8 @@ db_discover_classes <- function(r, mask = NULL, quiet = FALSE) {
       "i" = "Pass only the classes you need via {.arg class} if that is not intended."
     ))
   }
-  vals
+  # "all" means every value is its own class, i.e. one single-value group each.
+  list(groups = as.list(vals), labels = as.character(vals))
 }
 
 #' Validate a mask raster against the target grid

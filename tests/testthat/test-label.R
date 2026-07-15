@@ -183,18 +183,21 @@ test_that("class = 'all' labels every value separately with unique IDs", {
                 3, 3, 2), nrow = 3, byrow = TRUE)
   res <- label_patches(m, class = "all", directions = 4, quiet = TRUE)
   expect_true(all(c("patch_id", "class", "cells") %in% names(res$metrics)))
-  expect_equal(sort(unique(res$metrics$class)), c(1, 2, 3))
+  expect_equal(sort(unique(res$metrics$class)), c("1", "2", "3"))
   expect_equal(sort(res$metrics$patch_id), seq_len(nrow(res$metrics)))
   expect_equal(sum(res$metrics$cells), 9)   # every cell belongs to some class
   expect_equal(res$metadata$cells$background, 0)
 })
 
-test_that("a multi-value class vector labels only the values requested", {
+test_that("a class vector selects only the values requested, as one class", {
   skip_if_no_python()
   m <- matrix(c(1, 2, 3, 1), nrow = 2)
   res <- label_patches(m, class = c(1, 3), quiet = TRUE)
   expect_equal(sum(res$metrics$cells), 3)
   expect_equal(res$metadata$cells$background, 1)  # the 2 is background
+  # c(1, 3) is one class, so there is no class column and the values it names
+  # are labelled together where they touch.
+  expect_false("class" %in% names(res$metrics))
 })
 
 test_that("NA as a class is rejected", {

@@ -11,7 +11,7 @@
 # Bump when the labelling kernel changes semantics. This, not the package
 # version, invalidates caches -- a docstring fix should not throw away an hour
 # of labelling. See DESIGN.md section 5.
-ALGORITHM_VERSION <- "1"
+ALGORITHM_VERSION <- "2"
 
 # Minimums are what the kernels actually need: numpy for the bincount/unique
 # paths, scipy for ndimage.label and distance_transform_edt.
@@ -20,7 +20,7 @@ PY_REQUIREMENTS <- c("numpy>=1.22", "scipy>=1.9")
 # Must equal INTERFACE_VERSION in inst/python/diamondback_core.py. Bump both
 # together whenever the R-facing surface of that module changes: function names,
 # signatures, or the keys of a returned dict.
-PY_INTERFACE_VERSION <- "2"
+PY_INTERFACE_VERSION <- "3"
 
 .db_state <- new.env(parent = emptyenv())
 

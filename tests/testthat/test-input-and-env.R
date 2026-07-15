@@ -69,7 +69,10 @@ test_that("an unknown CRS is treated as planar rather than guessed from extent",
 test_that("memory estimates scale with cell count and stage", {
   n <- 1e6
   expect_equal(db_estimate_memory(n, "label"), n * 6)
-  expect_gt(db_estimate_memory(n, "core"), db_estimate_memory(n, "label"))
+  # Since the distance transform is tiled, core no longer carries a float64
+  # grid and is no longer the most expensive stage.
+  expect_equal(db_estimate_memory(n, "core"), n * 6)
+  expect_lt(db_estimate_memory(n, "metrics"), db_estimate_memory(n, "label"))
 })
 
 test_that("an oversized allocation errors before any work happens", {
@@ -85,7 +88,7 @@ test_that("the memory error names the estimate and the ways out", {
     db_check_memory(1e12, "label", memory_limit = 1e9, quiet = TRUE),
     error = function(e) conditionMessage(e)
   )
-  expect_match(err, "exceeds the safe limit")
+  expect_match(err, "more than this machine has")
   expect_match(err, "max_memory_frac")
   expect_match(err, "memory_limit")
 })

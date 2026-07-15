@@ -50,12 +50,23 @@
 #' SciPy. Version 1 uses one process and one core.
 #'
 #' @param x A `SpatRaster`, a raster filename, or a matrix.
-#' @param class Which values are foreground. `NULL` (default) treats `x` as
-#'   binary: any non-zero, non-`NA` value is foreground. A numeric scalar selects
-#'   one class from a categorical raster. A numeric vector labels each of those
-#'   classes separately. `"all"` discovers every distinct value and labels each
-#'   separately. With more than one class, patch IDs are unique across classes
-#'   and `metrics$class` records which class each patch belongs to.
+#' @param class Which values are foreground. **One element of `class` is one
+#'   class**:
+#'
+#'   * `NULL` (default) --- treat `x` as binary: any non-zero, non-`NA` value is
+#'     foreground.
+#'   * a numeric vector --- **one** class made of those values, e.g.
+#'     `class = c(41, 42, 43)` labels deciduous, evergreen and mixed forest as a
+#'     single forest class, connected across the boundaries between them.
+#'   * a list --- several classes, labelled separately and never joined to each
+#'     other, e.g. `class = list(forest = c(41, 42, 43), wetland = c(90, 95))`.
+#'     Names become the `class` column in `$metrics`; unnamed groups are labelled
+#'     by their values (`"41+42+43"`).
+#'   * `"all"` --- every distinct value becomes its own class.
+#'
+#'   A value may belong to only one class. With more than one class, patch IDs
+#'   are unique across classes and `metrics$class` records which class each patch
+#'   belongs to.
 #' @param directions Connectivity: `8` (default, queen --- diagonal neighbours
 #'   are connected) or `4` (rook).
 #' @param mask Optional study-area raster, aligned with `x`. Cells that are zero
@@ -79,10 +90,15 @@
 #'   same size with its timestamp restored. `"fast"` never hashes. The mode is
 #'   recorded and forms part of the cache key, so a result cached under a weaker
 #'   fingerprint is never reused for a request that asked for a stronger one.
-#' @param max_memory_frac Largest fraction of detected available RAM the array
-#'   may occupy. The operation errors before allocating if the estimate exceeds
-#'   this.
-#' @param memory_limit Explicit memory ceiling in bytes, overriding detection.
+#' @param max_memory_frac Largest fraction of this machine's **physical** RAM the
+#'   arrays may occupy. Above it the operation stops before allocating, because
+#'   the job cannot fit however the machine is used. Below it, diamondback will
+#'   run and merely warn if memory is currently tight -- an operating system
+#'   pages and reclaims, so a job larger than the free memory of the moment is
+#'   usually slow rather than impossible, and refusing it would be a false alarm.
+#' @param memory_limit Explicit ceiling in bytes, used instead of the detected
+#'   physical RAM. For the rare case where you know the budget better than the
+#'   machine does, such as a container with a cgroup limit.
 #' @param validate Run [validate_patch_result()] afterwards. Costs a second pass;
 #'   worth it while setting a workflow up.
 #' @param quiet Suppress progress reporting.
@@ -105,6 +121,11 @@
 #' # Diagonal contact joins them under 8-connectivity, but not under 4.
 #' label_patches(m, directions = 8, quiet = TRUE)$metadata$n_patches  # 1
 #' label_patches(m, directions = 4, quiet = TRUE)$metadata$n_patches  # 2
+#'
+#' # A vector is ONE class made of several values; a list is several classes.
+#' v <- matrix(c(41, 42, 21, 43), nrow = 2)
+#' label_patches(v, class = c(41, 42, 43), quiet = TRUE)$metadata$n_patches      # 1
+#' label_patches(v, class = list(41, 42, 43), quiet = TRUE)$metadata$n_patches   # 3
 label_patches <- function(x,
                           class = NULL,
                           directions = 8,
@@ -114,7 +135,7 @@ label_patches <- function(x,
                           output = NULL,
                           overwrite = FALSE,
                           fingerprint = c("auto", "full", "fast"),
-                          max_memory_frac = 0.6,
+                          max_memory_frac = 0.9,
                           memory_limit = NULL,
                           validate = FALSE,
                           quiet = FALSE) {
@@ -144,13 +165,16 @@ label_patches <- function(x,
   class <- db_check_class(class, r)
   if (identical(class, "all")) {
     class <- db_discover_classes(r, quiet = quiet)
-    if (!quiet) cli::cli_alert_info("Found {length(class)} class{?es}: {.val {class}}.")
+    if (!quiet) {
+      cli::cli_alert_info("Found {length(class$labels)} class{?es}: {.val {class$labels}}.")
+    }
   }
+  n_classes <- if (is.null(class)) 1L else length(class$groups)
 
   geom <- db_geometry(r)
   # More than 253 classes needs a uint16 code array, which is one more byte per
   # cell; the estimate has to know that before anything is allocated.
-  code_bytes <- if (!is.null(class) && length(class) > 253L) 2 else 1
+  code_bytes <- if (n_classes > 253L) 2 else 1
   db_check_memory(geom$ncell, "label", max_memory_frac, memory_limit,
                   quiet = quiet, code_bytes = code_bytes)
 
@@ -175,14 +199,13 @@ label_patches <- function(x,
       "i" = if (is.null(class)) {
         "{.arg x} was treated as binary, so every valid cell was zero."
       } else {
-        "No cell matched {.arg class} = {.val {class}}."
+        "No cell matched {.arg class}: {.val {unlist(class$groups)}}."
       }
     ))
   }
 
   # ---- label ----
   py <- db_py()
-  n_classes <- if (is.null(class)) 1L else length(class)
   use_int64 <- geom$ncell > .Machine$integer.max
 
   if (!quiet) {
@@ -214,10 +237,10 @@ label_patches <- function(x,
     cells = cells
   )
   if (n_classes > 1L) {
-    # patch_class holds class *indices*; report the class values users passed.
+    # patch_class holds class *indices*; report the label of each class.
     metrics <- data.frame(
       patch_id = metrics$patch_id,
-      class = class[patch_class],
+      class = class$labels[patch_class],
       cells = metrics$cells
     )
   }
@@ -240,7 +263,9 @@ label_patches <- function(x,
     metrics = metrics,
     metadata = meta,
     arrays = list(labels = labels, code = code, n = n_total,
-                  classes = class, na_background = identical(na, "background"))
+                  classes = if (is.null(class)) NULL else class$labels,
+                  groups = if (is.null(class)) NULL else class$groups,
+                  na_background = identical(na, "background"))
   )
 
   if (isTRUE(validate)) {
@@ -266,7 +291,7 @@ db_build_code <- function(r, mask_r, class, quiet = FALSE) {
   py <- db_py()
   np <- reticulate::import("numpy", convert = FALSE)
   nr <- terra::nrow(r); nc <- terra::ncol(r)
-  n_classes <- if (is.null(class)) 1L else length(class)
+  n_classes <- if (is.null(class)) 1L else length(class$groups)
 
   # uint8 up to 253 classes, uint16 beyond. Chosen once for the whole run from
   # the class count, not per block from whatever values a block contains.
@@ -292,7 +317,11 @@ db_build_code <- function(r, mask_r, class, quiet = FALSE) {
     blk <- py_try(
       py$code_block(as.numeric(v), as.integer(b$nrows), as.integer(nc),
                     mask = if (is.null(mv)) NULL else as.numeric(mv),
-                    class_values = class, n_classes = as.integer(n_classes)),
+                    # unname(): reticulate turns a *named* R list into a Python
+                    # dict, and enumerate() over a dict yields its keys. The
+                    # labels stay on the R side; Python only needs the order.
+                    class_groups = if (is.null(class)) NULL else unname(class$groups),
+                    n_classes = as.integer(n_classes)),
       "converting raster values to cell states"
     )
     py_try(py$set_rows(code, as.integer(b$row - 1L),

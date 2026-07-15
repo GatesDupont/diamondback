@@ -69,7 +69,7 @@ test_that("every key the R code asks of the backend actually exists", {
   # real kernels and names any key that has gone missing.
   py <- diamondback:::db_py()
   code <- py$code_block(as.numeric(c(1, 1, 0, 0)), 2L, 2L, mask = NULL,
-                        class_values = NULL, n_classes = 1L)
+                        class_groups = NULL, n_classes = 1L)
   lab <- py_get(py$label_array(code, 0L, 8L, FALSE), "labels")
 
   expected <- list(
@@ -86,7 +86,7 @@ test_that("every key the R code asks of the backend actually exists", {
     patch_bboxes = py$patch_bboxes(lab, 1L),
     edge_lengths = py$edge_lengths(lab, code, 1L, c(1, 1), c(1, 1, 1), FALSE),
     core_counts = py$core_counts(code, lab, 1L, 0L, 0.5,
-                                 reticulate::tuple(1, 1), "all"),
+                                 reticulate::tuple(1, 1), "all", want_mask = TRUE),
     overlap_counts = py$overlap_counts(lab, lab, 1L, 1L)
   )
 

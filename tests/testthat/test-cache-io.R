@@ -162,9 +162,11 @@ test_that("metadata records what is needed to reproduce a run", {
   m <- read_patch_result(d)$metadata
 
   expect_equal(m$directions, 4)
-  expect_equal(m$class, 1)
+  # class is a group specification now, not a bare value.
+  expect_equal(m$class$labels, "1")
+  expect_equal(unname(unlist(m$class$groups)), 1)
   expect_equal(m$na, "outside")
-  expect_equal(m$algorithm_version, "1")
+  expect_equal(m$algorithm_version, "2")
   expect_false(is.null(m$source$hash))
   expect_false(is.null(m$geometry$crs))
   expect_false(is.null(m$backend$scipy))

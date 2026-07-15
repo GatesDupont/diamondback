@@ -46,16 +46,32 @@ db_cache_fields <- function(meta) {
       xres = s(g$xres), yres = s(g$yres), crs = s(g$crs)
     ),
     # "binary" and "class" are one fact, so they are one key: NA-as-class does
-    # not survive JSON, but the string "<binary>" does.
-    class = if (isTRUE(meta$binary) || is.null(meta$class) || all(is.na(meta$class))) {
-      "<binary>"
-    } else {
-      s(sort(as.numeric(meta$class)))
-    },
+    # not survive JSON, but the string "<binary>" does. Groups are encoded
+    # label-and-values so that class = c(41,42,43) (one class) and
+    # class = list(41,42,43) (three classes) can never share a cache entry.
+    class = db_class_key(meta),
     directions = s(meta$directions),
     na = s(meta$na),
     crop = s(meta$crop)
   )
+}
+
+#' Canonical string for the class specification
+#'
+#' Sorted by label so the key does not depend on the order groups were written.
+#' @noRd
+db_class_key <- function(meta) {
+  cl <- meta$class
+  if (isTRUE(meta$binary) || is.null(cl) || !length(cl)) return("<binary>")
+  labels <- cl$labels
+  groups <- cl$groups
+  if (is.null(labels) || is.null(groups)) return("<binary>")
+  if (!is.list(groups)) groups <- list(groups)   # a 1-group JSON round-trip
+  parts <- vapply(seq_along(groups), function(k) {
+    vals <- sort(as.numeric(unlist(groups[[k]])))
+    paste0(labels[k], "=", paste(format(vals, digits = 15, trim = TRUE), collapse = ","))
+  }, character(1))
+  paste(sort(parts), collapse = "|")
 }
 
 db_cache_key <- function(meta) {
@@ -161,7 +177,7 @@ db_request_meta <- function(x, class, directions, mask, na, crop,
     source = db_source_info(x, fingerprint),
     mask_source = if (is.null(mask)) NULL else db_source_info(mask, fingerprint),
     geometry = db_geometry(r),
-    class = if (is.null(cls)) NA_real_ else cls,
+    class = if (is.null(cls)) NULL else list(labels = cls$labels, groups = cls$groups),
     binary = is.null(cls),
     directions = directions,
     na = na,

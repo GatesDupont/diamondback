@@ -10,7 +10,7 @@ patch_core_area(
   units = c("m", "km", "cells"),
   edge = c("all", "background"),
   core_raster = FALSE,
-  max_memory_frac = 0.6,
+  max_memory_frac = 0.9,
   memory_limit = NULL,
   quiet = FALSE
 )
@@ -28,9 +28,10 @@ patch_core_area(
 \item{core_raster}{Also return a raster of core cells, as
 \code{result$core_raster}, labelled with patch IDs and \code{0} elsewhere.}
 
-\item{max_memory_frac, memory_limit}{Memory guards. The distance transform
-holds a float64 array, making this the most memory-hungry step in the
-package (roughly 13 bytes per cell).}
+\item{max_memory_frac, memory_limit}{Memory guards, as in \code{\link[=label_patches]{label_patches()}}.
+The distance transform runs in row strips, so it costs roughly one byte per
+cell on top of the labels rather than the eight a full-array float64
+transform would need.}
 
 \item{quiet}{Suppress progress reporting.}
 }
@@ -80,6 +81,18 @@ boundary is an arbitrary analytical cut through continuous habitat.
 The distance transform needs uniform cell spacing, which a lon/lat grid does
 not have. This function errors on lon/lat unless \code{units = "cells"}. Project to
 an equal-area CRS first.
+}
+
+\section{Large rasters}{
+
+The transform runs in row strips with a halo of \verb{ceil(depth / cell size)}
+rows, which is what lets it run on rasters far larger than a full-array
+float64 distance grid would allow. The result is \strong{identical} to the
+full-array transform, not an approximation: a halo that wide is guaranteed to
+contain every source that could put a cell within \code{depth}, and any source it
+cannot see could only push the distance further above the threshold. The
+equivalence is asserted in the test suite on rasters small enough to compute
+both ways.
 }
 
 \examples{

@@ -24,6 +24,8 @@ Conventions
   background and is not meaningful.
 """
 
+import math
+
 import numpy as np
 from scipy import ndimage as ndi
 
@@ -45,7 +47,7 @@ __all__ = [
 ]
 
 # Labeling semantics. Changing this invalidates caches. See DESIGN.md section 5.
-ALGORITHM_VERSION = "1"
+ALGORITHM_VERSION = "2"
 
 # The R-facing surface of this module: function names, their signatures, and the
 # keys of the dicts they return. Bump it whenever any of those change, and bump
@@ -56,7 +58,7 @@ ALGORITHM_VERSION = "1"
 # still holds the old namespace in memory. The R half then calls the new Python
 # half with the old expectations and gets, say, KeyError: 'edge_domain_len',
 # which tells the user nothing. The handshake turns that into a sentence.
-INTERFACE_VERSION = "2"
+INTERFACE_VERSION = "3"
 
 
 def versions():
@@ -121,16 +123,20 @@ def code_dtype(n_classes):
         % (MAX_CLASSES_UINT16, n))
 
 
-def code_block(vals, nrow, ncol, mask=None, class_values=None, n_classes=1):
+def code_block(vals, nrow, ncol, mask=None, class_groups=None, n_classes=1):
     """Turn one block of raster values into cell state codes.
 
     Parameters
     ----------
     vals : 1D array-like, row-major, length nrow*ncol. NaN marks NA.
     mask : 1D array-like or None. Non-zero and non-NaN means "inside domain".
-    class_values : sequence of numbers, or None for binary treatment where any
-        non-zero value is foreground.
-    n_classes : total classes in the run, which fixes the dtype. Passed
+    class_groups : sequence of groups, each group a sequence of raster values,
+        or None for binary treatment where any non-zero value is foreground.
+        Every value in group k is coded 3 + k, so values sharing a group become
+        one class and are labelled as continuous habitat across their
+        boundaries; values in different groups get different codes and are
+        labelled separately.
+    n_classes : number of groups in the run, which fixes the dtype. Passed
         explicitly so that every block of a run agrees, rather than each block
         choosing from the values it happens to contain.
 
@@ -141,13 +147,15 @@ def code_block(vals, nrow, ncol, mask=None, class_values=None, n_classes=1):
     dt = code_dtype(n_classes)
     out = np.full(v.shape, 2, dtype=dt)
 
-    if class_values is None:
+    if class_groups is None:
         out[v != 0] = 3
     else:
-        cv = np.atleast_1d(np.asarray(class_values, dtype=np.float64))
-        code_dtype(cv.size)  # validates the count
-        for k in range(cv.size):
-            out[v == cv[k]] = 3 + k
+        code_dtype(len(class_groups))  # validates the count
+        for k, grp in enumerate(class_groups):
+            g = np.atleast_1d(np.asarray(grp, dtype=np.float64))
+            # One isin() per group: every value in the group lands on the same
+            # code, which is what makes a grouped class one connected surface.
+            out[np.isin(v, g)] = 3 + k
 
     out[np.isnan(v)] = 1
 
@@ -429,7 +437,27 @@ def edge_lengths(labels, code, n, dy_by_row, dx_by_gridline, na_background=False
 # Core area
 # --------------------------------------------------------------------------
 
-def core_counts(code, labels, n, class_index, depth, sampling, edge_mode="all"):
+def _edt_row_strips(nrow, ncol, halo_rows, target_bytes):
+    """Row strips for the tiled distance transform, sized to a memory target.
+
+    Strips span the full width, so no column halo is ever needed and both
+    vertical edges of every strip are true grid borders. That is a real
+    simplification, not a shortcut: it removes an entire class of tile-seam
+    bookkeeping.
+
+    Yields (r0, r1) tile bounds; the halo is added by the caller.
+    """
+    # bool src + float64 dist, over the padded strip
+    per_row = ncol * 9
+    h = int(target_bytes // per_row) - 2 * halo_rows
+    h = max(1, h)
+    if h >= nrow:
+        return [(0, nrow)]
+    return [(r, min(r + h, nrow)) for r in range(0, nrow, h)]
+
+
+def core_counts(code, labels, n, class_index, depth, sampling, edge_mode="all",
+                want_mask=False, target_bytes=256 * 1024 * 1024):
     """Cells further than `depth` from an edge, per patch, via an exact EDT.
 
     Distance is centre-to-centre: the transform returns, for each foreground
@@ -443,31 +471,85 @@ def core_counts(code, labels, n, class_index, depth, sampling, edge_mode="all"):
                              and outside-domain cells, and the area beyond the
                              grid, are treated as habitat, so patches clipped by
                              the study boundary are not penalised.
+
+    Tiling
+    ------
+    A full-array transform holds a float64 distance for every cell -- 8 bytes,
+    which on a 724M-cell raster is 5.8 GB and simply does not fit on an ordinary
+    machine. So the work is done in row strips, and the result is *identical*
+    rather than approximate.
+
+    Why it is exact. Give each strip a halo of ceil(depth / cell size) rows.
+    Then for any cell in the strip interior:
+
+      * if its true distance to a source is <= depth, that source lies within
+        `depth` of it, hence within the halo, hence inside the window -- so the
+        windowed transform finds it and returns the true distance;
+      * if its true distance is > depth, the windowed transform can only ever
+        report a *larger* value (it sees a subset of the sources), so it is
+        still > depth.
+
+    Either way the test `dist > depth` gives the same answer as the full-array
+    transform. This holds only because the test is a threshold at `depth`; the
+    distances themselves are not trustworthy beyond the halo, and are never
+    returned.
+
+    The other half of the argument is padding. Only sides that are a true grid
+    border are padded, and by exactly the one ring the full-array version used.
+    Interior strip edges get real data as their halo and are never padded --
+    padding them would invent sources that do not exist and report cells as
+    edge-affected when they are not.
     """
     code = np.asarray(code)
     labels = np.asarray(labels)
     n = int(n)
-    fg = code == (3 + int(class_index))
+    depth = float(depth)
+    nrow, ncol = code.shape
+    sy, sx = float(sampling[0]), float(sampling[1])
+    fg_code = 3 + int(class_index)
 
     if edge_mode == "all":
-        src = fg
         pad_value = False          # off-grid is non-habitat -> an edge
     elif edge_mode == "background":
-        src = code != 2            # zeros are valid background only
         pad_value = True           # off-grid is not an edge
     else:
         raise ValueError("edge_mode must be 'all' or 'background', got %r" % (edge_mode,))
 
-    padded = np.pad(src, 1, mode="constant", constant_values=pad_value)
-    dist = ndi.distance_transform_edt(padded, sampling=tuple(float(s) for s in sampling))
-    dist = dist[1:-1, 1:-1]
+    # A source within Euclidean `depth` is at most depth/sy rows away, so that
+    # many rows of halo is sufficient -- and sufficiency is the whole proof.
+    halo = int(math.ceil(depth / sy)) if sy > 0 else 0
 
-    core = fg & (dist > float(depth))
-    del dist, padded, src
+    counts = np.zeros(n + 1, dtype=np.int64)
+    mask_out = np.zeros((nrow, ncol), dtype=bool) if want_mask else None
 
-    counts = np.bincount(labels[core], minlength=n + 1).astype(np.int64)
+    for r0, r1 in _edt_row_strips(nrow, ncol, halo, target_bytes):
+        w0, w1 = max(0, r0 - halo), min(nrow, r1 + halo)
+        sub = code[w0:w1]
+        src = (sub == fg_code) if edge_mode == "all" else (sub != 2)
+
+        # Pad only true borders. Strips span the full width, so left and right
+        # always are; top and bottom only for the first and last strip.
+        pad_top = 1 if w0 == 0 else 0
+        pad_bot = 1 if w1 == nrow else 0
+        src = np.pad(src, ((pad_top, pad_bot), (1, 1)),
+                     mode="constant", constant_values=pad_value)
+
+        dist = ndi.distance_transform_edt(src, sampling=(sy, sx))
+        dist = dist[pad_top:dist.shape[0] - pad_bot, 1:-1]
+
+        # Drop the halo, keeping the strip proper.
+        d = dist[(r0 - w0):(r0 - w0) + (r1 - r0)]
+        fg = code[r0:r1] == fg_code
+        core = fg & (d > depth)
+        del dist, d, src, fg
+
+        if core.any():
+            counts += np.bincount(labels[r0:r1][core], minlength=n + 1)
+        if want_mask:
+            mask_out[r0:r1] = core
+
     counts[0] = 0
-    return {"core_count": counts, "core_mask": core}
+    return {"core_count": counts.astype(np.int64), "core_mask": mask_out}
 
 
 # --------------------------------------------------------------------------

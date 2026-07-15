@@ -164,7 +164,9 @@ test_that("core area is computed per class, not across classes", {
   # Two classes filling the grid. If the transform ran on "any patch", every
   # cell would look interior; per class, neither has core at depth 1.
   m <- matrix(1, 6, 6); m[, 4:6] <- 2
-  res <- label_patches(rast_from(m, res = 1), class = c(1, 2), quiet = TRUE)
+  # list(1, 2), not c(1, 2): a vector would now be one class of both values,
+  # and the two blocks would merge into a single patch with a real interior.
+  res <- label_patches(rast_from(m, res = 1), class = list(1, 2), quiet = TRUE)
   mt <- patch_core_area(res, depth = 1, quiet = TRUE)$metrics
   expect_equal(nrow(mt), 2L)
   # Each class is a 6x3 block: only its own interior counts, and the shared

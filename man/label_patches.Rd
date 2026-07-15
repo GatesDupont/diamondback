@@ -14,7 +14,7 @@ label_patches(
   output = NULL,
   overwrite = FALSE,
   fingerprint = c("auto", "full", "fast"),
-  max_memory_frac = 0.6,
+  max_memory_frac = 0.9,
   memory_limit = NULL,
   validate = FALSE,
   quiet = FALSE
@@ -23,12 +23,24 @@ label_patches(
 \arguments{
 \item{x}{A \code{SpatRaster}, a raster filename, or a matrix.}
 
-\item{class}{Which values are foreground. \code{NULL} (default) treats \code{x} as
-binary: any non-zero, non-\code{NA} value is foreground. A numeric scalar selects
-one class from a categorical raster. A numeric vector labels each of those
-classes separately. \code{"all"} discovers every distinct value and labels each
-separately. With more than one class, patch IDs are unique across classes
-and \code{metrics$class} records which class each patch belongs to.}
+\item{class}{Which values are foreground. \strong{One element of \code{class} is one
+class}:
+\itemize{
+\item \code{NULL} (default) --- treat \code{x} as binary: any non-zero, non-\code{NA} value is
+foreground.
+\item a numeric vector --- \strong{one} class made of those values, e.g.
+\code{class = c(41, 42, 43)} labels deciduous, evergreen and mixed forest as a
+single forest class, connected across the boundaries between them.
+\item a list --- several classes, labelled separately and never joined to each
+other, e.g. \code{class = list(forest = c(41, 42, 43), wetland = c(90, 95))}.
+Names become the \code{class} column in \verb{$metrics}; unnamed groups are labelled
+by their values (\code{"41+42+43"}).
+\item \code{"all"} --- every distinct value becomes its own class.
+}
+
+A value may belong to only one class. With more than one class, patch IDs
+are unique across classes and \code{metrics$class} records which class each patch
+belongs to.}
 
 \item{directions}{Connectivity: \code{8} (default, queen --- diagonal neighbours
 are connected) or \code{4} (rook).}
@@ -60,11 +72,16 @@ same size with its timestamp restored. \code{"fast"} never hashes. The mode is
 recorded and forms part of the cache key, so a result cached under a weaker
 fingerprint is never reused for a request that asked for a stronger one.}
 
-\item{max_memory_frac}{Largest fraction of detected available RAM the array
-may occupy. The operation errors before allocating if the estimate exceeds
-this.}
+\item{max_memory_frac}{Largest fraction of this machine's \strong{physical} RAM the
+arrays may occupy. Above it the operation stops before allocating, because
+the job cannot fit however the machine is used. Below it, diamondback will
+run and merely warn if memory is currently tight -- an operating system
+pages and reclaims, so a job larger than the free memory of the moment is
+usually slow rather than impossible, and refusing it would be a false alarm.}
 
-\item{memory_limit}{Explicit memory ceiling in bytes, overriding detection.}
+\item{memory_limit}{Explicit ceiling in bytes, used instead of the detected
+physical RAM. For the rare case where you know the budget better than the
+machine does, such as a container with a cgroup limit.}
 
 \item{validate}{Run \code{\link[=validate_patch_result]{validate_patch_result()}} afterwards. Costs a second pass;
 worth it while setting a workflow up.}
@@ -142,6 +159,11 @@ m <- matrix(c(1, 1, 0, 0,
 # Diagonal contact joins them under 8-connectivity, but not under 4.
 label_patches(m, directions = 8, quiet = TRUE)$metadata$n_patches  # 1
 label_patches(m, directions = 4, quiet = TRUE)$metadata$n_patches  # 2
+
+# A vector is ONE class made of several values; a list is several classes.
+v <- matrix(c(41, 42, 21, 43), nrow = 2)
+label_patches(v, class = c(41, 42, 43), quiet = TRUE)$metadata$n_patches      # 1
+label_patches(v, class = list(41, 42, 43), quiet = TRUE)$metadata$n_patches   # 3
 \dontshow{\}) # examplesIf}
 }
 \seealso{

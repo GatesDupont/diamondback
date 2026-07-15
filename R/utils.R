@@ -141,7 +141,10 @@ db_metadata <- function(source, mask_source, geometry, class, directions, na,
     source = source,
     mask_source = mask_source,
     geometry = geometry,
-    class = if (is.null(class)) NA_real_ else class,
+    # Groups and labels, not a bare vector: "one class made of 41/42/43" and
+    # "three separate classes" are different runs and must be distinguishable
+    # here, in the cache key, and to anyone reading the metadata later.
+    class = if (is.null(class)) NULL else list(labels = class$labels, groups = class$groups),
     binary = is.null(class),
     directions = directions,
     na = na,
