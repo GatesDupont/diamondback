@@ -35,7 +35,7 @@
 #'
 #' @seealso [compare_patches()]
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' # Three steps: a patch grows, then splits.
 #' m1 <- matrix(0, 6, 6); m1[2:3, 2:3] <- 1
 #' m2 <- matrix(0, 6, 6); m2[2:5, 2:5] <- 1

@@ -60,12 +60,14 @@ every consecutive transition in one tidy table, which is enough to build most
 lineage analyses and is honest about what it knows.
 }
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 # Three steps: a patch grows, then splits.
 m1 <- matrix(0, 6, 6); m1[2:3, 2:3] <- 1
 m2 <- matrix(0, 6, 6); m2[2:5, 2:5] <- 1
 m3 <- matrix(0, 6, 6); m3[2:3, 2:5] <- 1; m3[5, 2:5] <- 1
 s <- track_patch_series(list(m1, m2, m3), time = c(2000, 2010, 2020), quiet = TRUE)
 s$summary
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=compare_patches]{compare_patches()}}

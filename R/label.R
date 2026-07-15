@@ -26,6 +26,29 @@
 #' `na = "background"`, which is the right choice when a raster uses `NA` to mean
 #' genuine absence rather than lack of knowledge.
 #'
+#' @section Patch IDs are labels, not identities:
+#' IDs are assigned in raster scan order (top-left to bottom-right), so they are
+#' **deterministic** for a given raster, class, mask and connectivity: the same
+#' inputs always produce the same numbering.
+#'
+#' They are **not** a persistent identity. Patch 47 in 1985 and patch 47 in 2024
+#' are unrelated. Worse, IDs are not even stable across changes you might think
+#' are cosmetic: cropping the raster, changing the mask, switching connectivity,
+#' or a single cell flipping near the top-left will renumber everything after it.
+#'
+#' Never join two runs on `patch_id`. To follow patches through time, use
+#' [compare_patches()] or [track_patch_series()], which establish correspondence
+#' from actual cell overlap. `lineage_id` in a comparison identifies a group of
+#' related patches *within that comparison*, and is likewise not a durable key.
+#'
+#' @section Determinism and threading:
+#' Every kernel is single-threaded and deterministic. `scipy.ndimage.label()`,
+#' the distance transform, and the NumPy reductions used here are serial C code,
+#' and none of them touch BLAS, so `OMP_NUM_THREADS` and friends have no effect
+#' on the result or the runtime. Re-running an analysis on the same inputs gives
+#' bit-for-bit identical output, on any machine with a compatible NumPy and
+#' SciPy. Version 1 uses one process and one core.
+#'
 #' @param x A `SpatRaster`, a raster filename, or a matrix.
 #' @param class Which values are foreground. `NULL` (default) treats `x` as
 #'   binary: any non-zero, non-`NA` value is foreground. A numeric scalar selects
@@ -49,6 +72,13 @@
 #'   raster is written and the result stores the path rather than holding cells
 #'   in memory.
 #' @param overwrite Overwrite `output` if it exists.
+#' @param fingerprint How thoroughly the source is identified for caching and
+#'   provenance. `"auto"` (default) hashes file contents under 200 MB and falls
+#'   back to size and modification time above that. `"full"` always hashes the
+#'   contents, however large: slower, but immune to a file being rewritten at the
+#'   same size with its timestamp restored. `"fast"` never hashes. The mode is
+#'   recorded and forms part of the cache key, so a result cached under a weaker
+#'   fingerprint is never reused for a request that asked for a stronger one.
 #' @param max_memory_frac Largest fraction of detected available RAM the array
 #'   may occupy. The operation errors before allocating if the estimate exceeds
 #'   this.
@@ -65,7 +95,7 @@
 #' @seealso [patch_metrics()] for geometry, [analyze_patches()] to do both,
 #'   [compare_patches()] for change over time.
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' # The two blocks touch only at a corner.
 #' m <- matrix(c(1, 1, 0, 0,
 #'               1, 1, 0, 0,
@@ -83,11 +113,13 @@ label_patches <- function(x,
                           crop = NULL,
                           output = NULL,
                           overwrite = FALSE,
+                          fingerprint = c("auto", "full", "fast"),
                           max_memory_frac = 0.6,
                           memory_limit = NULL,
                           validate = FALSE,
                           quiet = FALSE) {
   na <- match.arg(na)
+  fingerprint <- match.arg(fingerprint)
   t_start <- Sys.time()
 
   if (!is.numeric(directions) || length(directions) != 1L || !directions %in% c(4, 8)) {
@@ -97,10 +129,10 @@ label_patches <- function(x,
     ), call = NULL)
   }
 
-  src <- db_source_info(x)
+  src <- db_source_info(x, fingerprint)
   r <- db_as_rast(x)
   mask_r <- db_check_mask(mask, r)
-  mask_src <- if (is.null(mask)) NULL else db_source_info(mask)
+  mask_src <- if (is.null(mask)) NULL else db_source_info(mask, fingerprint)
 
   if (is.null(crop)) crop <- !is.null(mask_r)
   if (isTRUE(crop) && !is.null(mask_r)) {
@@ -116,7 +148,11 @@ label_patches <- function(x,
   }
 
   geom <- db_geometry(r)
-  db_check_memory(geom$ncell, "label", max_memory_frac, memory_limit, quiet = quiet)
+  # More than 253 classes needs a uint16 code array, which is one more byte per
+  # cell; the estimate has to know that before anything is allocated.
+  code_bytes <- if (!is.null(class) && length(class) > 253L) 2 else 1
+  db_check_memory(geom$ncell, "label", max_memory_frac, memory_limit,
+                  quiet = quiet, code_bytes = code_bytes)
 
   if (!is.null(output)) db_check_output(output, overwrite)
 
@@ -228,9 +264,12 @@ db_build_code <- function(r, mask_r, class, quiet = FALSE) {
   py <- db_py()
   np <- reticulate::import("numpy", convert = FALSE)
   nr <- terra::nrow(r); nc <- terra::ncol(r)
+  n_classes <- if (is.null(class)) 1L else length(class)
 
+  # uint8 up to 253 classes, uint16 beyond. Chosen once for the whole run from
+  # the class count, not per block from whatever values a block contains.
   code <- py_try(np$zeros(reticulate::tuple(as.integer(nr), as.integer(nc)),
-                          dtype = np$uint8),
+                          dtype = py$code_dtype(as.integer(n_classes))),
                  "allocating the cell-state array")
 
   blocks <- db_row_blocks(nr, nc)
@@ -251,7 +290,7 @@ db_build_code <- function(r, mask_r, class, quiet = FALSE) {
     blk <- py_try(
       py$code_block(as.numeric(v), as.integer(b$nrows), as.integer(nc),
                     mask = if (is.null(mv)) NULL else as.numeric(mv),
-                    class_values = class),
+                    class_values = class, n_classes = as.integer(n_classes)),
       "converting raster values to cell states"
     )
     py_try(py$set_rows(code, as.integer(b$row - 1L),

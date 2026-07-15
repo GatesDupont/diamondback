@@ -45,8 +45,33 @@ First release.
 
 ## Environment
 
-* Python, NumPy and SciPy are resolved on first use via
-  `reticulate::py_require()`. Nothing is installed into existing environments,
-  and nothing happens at `library()` time.
-* `diamondback_check()` reports the full stack and runs a real labelling
-  operation end to end.
+* **Running an analysis never downloads or installs anything.** diamondback uses
+  a Python you already have — `RETICULATE_PYTHON`, an active virtualenv or conda
+  environment, or any interpreter on `PATH` that has NumPy and SciPy. If it finds
+  none, it stops and explains the options rather than fetching an interpreter.
+* `diamondback_install_python()` is the only thing that downloads. It says what
+  it will fetch, asks first when interactive, and records consent so it asks
+  once. `diamondback_remove_python()` revokes it.
+* `diamondback_check()` reports the full stack, names which Python source was
+  used, and runs a real labelling operation end to end.
+
+## Limits and conventions made explicit
+
+* Up to 65,533 classes per run. The cell-state array widens from `uint8` to
+  `uint16` automatically past 253 classes, at one extra byte per cell, which the
+  memory estimate accounts for.
+* `fingerprint = c("auto", "full", "fast")` controls how strongly a source is
+  identified for caching. `"auto"` hashes files under 200 MB and uses size and
+  mtime above that; `"full"` always hashes, for pipelines where inputs are
+  regenerated and a size-and-mtime match could be a false hit. The mode is part
+  of the cache key.
+* Rotated rasters and lon/lat extents beyond the poles are rejected rather than
+  approximated. The supported geometry is a north-up, axis-aligned, regular grid.
+* Patch IDs are deterministic labels, not persistent identities: never join two
+  runs on `patch_id`.
+* Single-process and single-threaded; the kernels never touch BLAS, so results
+  are bit-for-bit reproducible and thread-count environment variables have no
+  effect.
+* Core-area distance is centre-to-centre, documented and pinned by tests. A
+  nominal depth is measured to the nearest non-habitat cell *centre*, half a cell
+  further than the physical patch boundary.

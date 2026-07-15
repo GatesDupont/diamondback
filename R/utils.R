@@ -37,28 +37,45 @@ db_elapsed <- function(t0) {
 # fingerprints
 # ---------------------------------------------------------------------------
 
-# How large a file may be before we stop hashing its contents and fall back to
-# size + mtime. Hashing a 40 GB raster to decide whether to reuse a cache costs
-# more than the labelling did.
+# How large a file may be before "auto" stops hashing its contents and falls
+# back to size + mtime. Hashing a 40 GB raster to decide whether to reuse a
+# cache can cost more than the labelling did.
 HASH_MAX_MB <- 200
 
 #' Describe an input well enough to detect that it has changed
 #'
-#' For file-backed rasters this is path + size + mtime, plus a content hash when
-#' the file is small enough to be worth hashing. For in-memory rasters there is
-#' no file to fingerprint, so the values themselves are hashed when small and
-#' otherwise the source is marked unfingerprintable --- in which case caching is
-#' declined rather than guessed at.
+#' `fingerprint` controls the strength/cost trade-off:
+#'
+#' * `"auto"` (default) --- content hash for files under `hash_max_mb`, size and
+#'   mtime beyond that.
+#' * `"full"` --- always hash the contents, however large. Slower, but immune to
+#'   a file being rewritten with the same size and a restored mtime.
+#' * `"fast"` --- never hash; size and mtime only.
+#'
+#' Size and mtime are a *heuristic*: a file can be rewritten at the same size
+#' with `touch -r` restoring its timestamp, and the cache would then be reused
+#' for changed data. That is why `"full"` exists, and why the mode is recorded
+#' in the metadata and forms part of the cache key -- a cache built under a weak
+#' fingerprint is never silently trusted by a request asking for a strong one.
+#'
+#' For in-memory rasters there is no file to fingerprint. Small ones are hashed
+#' by value; large ones are marked unfingerprintable, and caching is declined
+#' rather than guessed at.
 #' @noRd
-db_source_info <- function(x, hash_max_mb = HASH_MAX_MB) {
+db_source_info <- function(x, fingerprint = c("auto", "full", "fast"),
+                           hash_max_mb = HASH_MAX_MB) {
+  fingerprint <- match.arg(fingerprint)
+
   if (is.character(x) && length(x) == 1L && file.exists(x)) {
     fi <- file.info(x)
+    lim <- switch(fingerprint, auto = hash_max_mb, full = Inf, fast = -1)
     return(list(
       type = "file",
       path = normalizePath(x, winslash = "/"),
       size = as.numeric(fi$size),
       mtime = as.character(fi$mtime),
-      hash = db_file_hash(x, hash_max_mb)
+      hash = db_file_hash(x, lim),
+      fingerprint = fingerprint
     ))
   }
 
@@ -66,31 +83,38 @@ db_source_info <- function(x, hash_max_mb = HASH_MAX_MB) {
     srcs <- terra::sources(x)
     srcs <- srcs[nzchar(srcs)]
     if (length(srcs) == 1L && file.exists(srcs)) {
-      return(db_source_info(srcs, hash_max_mb))
+      return(db_source_info(srcs, fingerprint, hash_max_mb))
     }
-    if (terra::ncell(x) <= 1e6) {
+    # An in-memory raster is hashed by value when that is cheap; "full" forces
+    # it regardless of size.
+    lim <- if (identical(fingerprint, "full")) Inf else 1e6
+    if (terra::ncell(x) <= lim) {
       return(list(
         type = "memory",
         path = NA_character_,
         size = terra::ncell(x),
         mtime = NA_character_,
-        hash = digest::digest(terra::values(x, mat = FALSE), algo = "sha1")
+        hash = digest::digest(terra::values(x, mat = FALSE), algo = "sha1"),
+        fingerprint = fingerprint
       ))
     }
     return(list(type = "memory", path = NA_character_, size = terra::ncell(x),
-                mtime = NA_character_, hash = NA_character_))
+                mtime = NA_character_, hash = NA_character_,
+                fingerprint = fingerprint))
   }
 
   if (is.matrix(x)) {
     return(list(type = "matrix", path = NA_character_, size = length(x),
-                mtime = NA_character_, hash = digest::digest(x, algo = "sha1")))
+                mtime = NA_character_, hash = digest::digest(x, algo = "sha1"),
+                fingerprint = fingerprint))
   }
 
   list(type = "unknown", path = NA_character_, size = NA_real_,
-       mtime = NA_character_, hash = NA_character_)
+       mtime = NA_character_, hash = NA_character_, fingerprint = fingerprint)
 }
 
 db_file_hash <- function(path, hash_max_mb = HASH_MAX_MB) {
+  if (is.infinite(hash_max_mb) && hash_max_mb < 0) return(NA_character_)
   size_mb <- file.info(path)$size / 1024^2
   if (is.na(size_mb) || size_mb > hash_max_mb) return(NA_character_)
   tryCatch(digest::digest(file = path, algo = "sha1"), error = function(e) NA_character_)

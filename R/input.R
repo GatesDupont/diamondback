@@ -1,6 +1,49 @@
 # Normalising inputs into a "grid": everything downstream needs to know about
 # the geometry of an analysis, resolved once and validated once.
 
+# Classes are encoded as 3 + k in an unsigned integer array; uint16 is the
+# widest diamondback uses, giving codes 3..65535. Kept in sync with
+# MAX_CLASSES_UINT16 in inst/python/diamondback_core.py.
+MAX_CLASSES <- 65533L
+
+#' Reject geometry the package does not actually support
+#'
+#' diamondback assumes a north-up, axis-aligned, regular grid. A `SpatRaster` is
+#' that by construction -- terra's data model is an extent plus a cell count,
+#' with no rotation term -- with one exception: terra can carry a rotated
+#' GDAL geotransform, and `is.rotated()` reports it. Every cell-index-to-map
+#' conversion in this package (bounding boxes, centroids, per-row latitudes)
+#' assumes no rotation, so a rotated raster would produce confident nonsense.
+#'
+#' For lon/lat grids the latitude bounds are checked too: terra will happily
+#' build a raster reaching to 100 degrees north, and the geodesic per-row
+#' geometry would silently return garbage for it.
+#' @noRd
+db_check_grid <- function(r, arg = "x") {
+  rot <- tryCatch(terra::is.rotated(r), error = function(e) FALSE)
+  if (isTRUE(rot)) {
+    cli::cli_abort(c(
+      "{.arg {arg}} is a rotated raster, which diamondback does not support.",
+      "x" = "Cell indices could not be converted to map coordinates correctly.",
+      "i" = "Rectify it first, e.g. {.code terra::rectify(x)}, then re-run."
+    ), call = NULL)
+  }
+
+  if (db_is_lonlat(r)) {
+    e <- terra::ext(r)
+    if (e$ymin < -90.0001 || e$ymax > 90.0001) {
+      cli::cli_abort(c(
+        "{.arg {arg}} is in lon/lat but its extent reaches beyond the poles.",
+        "x" = "Latitude range is {round(e$ymin, 4)} to {round(e$ymax, 4)}; \\
+               valid latitudes are -90 to 90.",
+        "i" = "Geodesic cell areas and edge lengths are undefined there.",
+        "i" = "Crop to a valid extent, or check that the CRS is really geographic."
+      ), call = NULL)
+    }
+  }
+  invisible(TRUE)
+}
+
 #' Coerce raster-like input to a single-layer SpatRaster
 #'
 #' Accepts a SpatRaster, a filename, or a matrix. A matrix is given a trivial
@@ -47,6 +90,7 @@ db_as_rast <- function(x, arg = "x") {
   if (terra::ncell(r) == 0) {
     cli::cli_abort("{.arg {arg}} has no cells.", call = NULL)
   }
+  db_check_grid(r, arg = arg)
   r
 }
 
@@ -217,12 +261,23 @@ db_discover_classes <- function(r, mask = NULL, quiet = FALSE) {
   if (length(vals) == 0) {
     cli::cli_abort("{.arg x} contains no non-NA values, so there is nothing to label.", call = NULL)
   }
-  if (length(vals) > 252) {
+  if (length(vals) > MAX_CLASSES) {
     cli::cli_abort(c(
-      '{.arg class = "all"} found {length(vals)} distinct values; at most 252 are supported.',
+      '{.arg class = "all"} found {format(length(vals), big.mark = ",")} distinct \\
+       values; at most {format(MAX_CLASSES, big.mark = ",")} are supported.',
       "i" = "This raster looks continuous rather than categorical.",
       "i" = "Pass the specific values you want via {.arg class}."
     ), call = NULL)
+  }
+  # Past a few hundred classes this is one labelling pass per class over the
+  # whole raster, so warn rather than silently take an hour.
+  if (length(vals) > 100) {
+    cli::cli_warn(c(
+      '{.arg class = "all"} found {length(vals)} distinct values.',
+      "i" = "Each class is labelled in a separate pass over the raster, so this \\
+             will take roughly {length(vals)}x as long as a single class.",
+      "i" = "Pass only the classes you need via {.arg class} if that is not intended."
+    ))
   }
   vals
 }

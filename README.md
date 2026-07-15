@@ -25,9 +25,11 @@ and the bookkeeping for patch lineage through time.
 remotes::install_github("GatesDupont/diamondback")
 ```
 
-Python, NumPy and SciPy are resolved automatically on first use via
-`reticulate::py_require()` — nothing is installed into your existing
-environments, and nothing happens at `library()` time. To check:
+diamondback needs Python with NumPy and SciPy. **It will never download or
+install anything on its own** — running an analysis is not consent to fetch a
+Python interpreter. If you already have a suitable Python (on your `PATH`, in an
+active virtualenv or conda environment, or pointed at by `RETICULATE_PYTHON`), it
+just uses it. Otherwise it stops and tells you your options.
 
 ```r
 library(diamondback)
@@ -48,8 +50,24 @@ Available RAM: 21.4 GB
 v Labelling a small test raster succeeded. diamondback is ready.
 ```
 
-To use your own environment instead, set `RETICULATE_PYTHON` before loading the
-package and diamondback will step aside.
+If you don't have NumPy and SciPy anywhere, you have three choices, and
+diamondback names them rather than picking for you:
+
+```r
+# 1. Install them into the Python you already use:
+#    pip install numpy scipy
+
+# 2. Point diamondback at an environment that has them:
+options(diamondback.python = "/path/to/python")
+
+# 3. Let diamondback set up a private environment. This is the only thing in
+#    the package that downloads (~200 MB), and it tells you what it will do
+#    and asks first. Your existing environments are not modified.
+diamondback_install_python()
+```
+
+Consent from option 3 is remembered, so it is asked once, not every session;
+`diamondback_remove_python()` revokes it.
 
 ## Quick start
 
@@ -102,6 +120,18 @@ change$lineages   # one row per connected group of related patches
 Re-running `analyze_patches()` with the same inputs reads the cached result
 instead of relabelling. Change the class, the mask, the connectivity or the
 source file, and it recomputes and tells you which one changed.
+
+By default a source file under 200 MB is identified by a content hash and larger
+ones by size and modification time. Size and mtime are a heuristic, not proof —
+a file rewritten at the same size with its timestamp restored would look
+unchanged. If your inputs get regenerated, use `fingerprint = "full"` to always
+hash contents; it costs a read and is still far cheaper than relabelling.
+
+> **Patch IDs are labels, not identities.** They are deterministic for given
+> inputs, but patch 47 in 1985 has nothing to do with patch 47 in 2024 — and
+> cropping, remasking, or one cell flipping near the top-left renumbers
+> everything after it. Never join two runs on `patch_id`. Use
+> `compare_patches()`, which establishes correspondence from actual cell overlap.
 
 ## Is it actually faster?
 
@@ -261,11 +291,22 @@ considered and rejected for v1.
 - Labelling requires the array to fit in RAM. Tiled/Dask backends were
   considered and rejected for v1; the kernel is isolated so one can be added
   without changing the API.
+- **Single-process and single-threaded.** The SciPy and NumPy kernels used here
+  are serial C and never touch BLAS, so `OMP_NUM_THREADS` and friends have no
+  effect on results or runtime. The upside: output is bit-for-bit reproducible.
 - `patch_core_area()` needs a projected raster. Everything else supports lon/lat
-  exactly, using per-row geodesic geometry.
-- Up to 252 classes in one run.
+  exactly, using per-row geodesic geometry — but only for **north-up,
+  axis-aligned, regular** grids, which is what a `SpatRaster` is. Rotated rasters
+  and impossible latitudes are rejected, not approximated.
+- Up to 65,533 classes in one run (253 before an internal `uint16` widening
+  that costs one byte per cell). Each class is a separate labelling pass, so cost
+  scales with the class count.
 - Lineage is built from consecutive pairwise comparisons, not a global identity
   model.
+- Core-area distance is measured centre-to-centre — see `?patch_core_area`. A
+  nominal 300 m depth is *not* 300 m from the physical patch boundary; it is
+  300 m from the nearest non-habitat cell **centre**, which differs by half a
+  cell.
 
 ## License
 

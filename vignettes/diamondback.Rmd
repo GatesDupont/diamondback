@@ -9,11 +9,18 @@ vignette: >
 
 ```{r, include = FALSE}
 knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
-# The vignette needs the Python backend; skip cleanly on machines without it.
+# The vignette needs the Python backend. diamondback never provisions one on its
+# own, so on a machine without NumPy and SciPy this renders as prose rather than
+# quietly downloading an interpreter to build a vignette.
 has_python <- tryCatch({
   diamondback::diamondback_python(quiet = TRUE); TRUE
 }, error = function(e) FALSE)
 knitr::opts_chunk$set(eval = has_python)
+```
+
+```{r, echo = FALSE, results = "asis", eval = !has_python}
+cat("> **Note:** the code below was not run, because no Python with NumPy and",
+    "SciPy was found. See `diamondback_check()` and `diamondback_install_python()`.\n")
 ```
 
 ```{r setup, message = FALSE}
@@ -38,6 +45,13 @@ diamondback_check()
 
 That runs a real labelling operation end to end. If it reports success,
 everything in this vignette will work.
+
+diamondback will not install Python for you. If you already have NumPy and SciPy
+somewhere it finds them; if not, `diamondback_check()` says so and you choose:
+`pip install numpy scipy` into your own environment, point
+`options(diamondback.python = )` at one that has them, or run
+`diamondback_install_python()` to set up a private one (the only thing here that
+downloads, and it asks first).
 
 ## A landscape
 
@@ -174,9 +188,24 @@ head(p1$metrics[, c("patch_id", "cells", "core_cells", "core_area_ha",
                     "core_fraction")])
 ```
 
-Distance is measured centre-to-centre, so with 30 m cells a `depth` of 60 m
-means a cell needs at least two cells of habitat between it and the nearest
-non-habitat cell.
+Distance is measured **centre-to-centre**: from each habitat cell's centre to
+the centre of the nearest non-habitat cell. This is worth being precise about,
+because a nominal depth means two different things half a cell apart.
+
+With 30 m cells, a cell sitting immediately next to non-habitat is at distance
+**30 m**, not 0 and not 15 — even though the physical patch boundary is only
+15 m from its centre. So `depth = 60` keeps cells with at least two cells of
+habitat between them and the nearest non-habitat cell.
+
+If you want the depth measured from the physical boundary instead, add half a
+cell:
+
+```{r core-halfcell}
+centre_rule   <- patch_core_area(p1, depth = 60, quiet = TRUE)
+boundary_rule <- patch_core_area(p1, depth = 60 + 15, quiet = TRUE)
+c(centre = sum(centre_rule$metrics$core_cells),
+  boundary = sum(boundary_rule$metrics$core_cells))
+```
 
 `edge = "background"` changes what counts as an edge — masked, missing and
 off-grid cells become habitat, so patches clipped by the study boundary are not
@@ -331,6 +360,33 @@ third <- analyze_patches(f, class = 1, directions = 4, output_dir = d)
 
 Metric options deliberately do **not** invalidate a labelling cache, because they
 cannot change the labels.
+
+How strongly the source is identified is your choice. By default files under
+200 MB are hashed and larger ones are matched on size and modification time —
+convenient, but a heuristic: a file rewritten at the same size with its timestamp
+restored would look unchanged. On a pipeline whose inputs get regenerated, ask
+for the stronger check:
+
+```{r fingerprint}
+strict <- analyze_patches(f, class = 1, output_dir = d, fingerprint = "full")
+```
+
+### Patch IDs are not identities
+
+This is the easiest way to get a wrong answer with this package:
+
+```{r ids}
+head(p1$metrics$patch_id)
+```
+
+IDs are assigned in raster scan order. They are perfectly deterministic — the
+same inputs always give the same numbering — but they carry no meaning across
+runs. Patch 47 in 2000 and patch 47 in 2020 are unrelated, and cropping,
+changing the mask, or one cell flipping near the top-left renumbers everything
+after it.
+
+Never join two runs on `patch_id`. Correspondence between times comes only from
+`compare_patches()`, which derives it from actual cell overlap.
 
 The result on disk is three plain files — a GeoTIFF, a CSV and a JSON — readable
 without R or Python:

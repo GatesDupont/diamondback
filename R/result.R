@@ -190,7 +190,7 @@ summary.patch_result <- function(object, ...) {
 #' @param overwrite Overwrite `filename` if it exists.
 #' @return A categorical `SpatRaster`.
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' m <- matrix(c(1, 1, NA, 0, 0, 1, 0, 1, 1), nrow = 3)
 #' res <- label_patches(m, quiet = TRUE)
 #' terra::freq(patch_domain(res))

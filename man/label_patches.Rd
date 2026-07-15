@@ -13,6 +13,7 @@ label_patches(
   crop = NULL,
   output = NULL,
   overwrite = FALSE,
+  fingerprint = c("auto", "full", "fast"),
   max_memory_frac = 0.6,
   memory_limit = NULL,
   validate = FALSE,
@@ -50,6 +51,14 @@ raster is written and the result stores the path rather than holding cells
 in memory.}
 
 \item{overwrite}{Overwrite \code{output} if it exists.}
+
+\item{fingerprint}{How thoroughly the source is identified for caching and
+provenance. \code{"auto"} (default) hashes file contents under 200 MB and falls
+back to size and modification time above that. \code{"full"} always hashes the
+contents, however large: slower, but immune to a file being rewritten at the
+same size with its timestamp restored. \code{"fast"} never hashes. The mode is
+recorded and forms part of the cache key, so a result cached under a weaker
+fingerprint is never reused for a request that asked for a stronger one.}
 
 \item{max_memory_frac}{Largest fraction of detected available RAM the array
 may occupy. The operation errors before allocating if the estimate exceeds
@@ -95,7 +104,35 @@ and \code{\link[=patch_domain]{patch_domain()}} reconstructs the distinction as 
 genuine absence rather than lack of knowledge.
 }
 
+\section{Patch IDs are labels, not identities}{
+
+IDs are assigned in raster scan order (top-left to bottom-right), so they are
+\strong{deterministic} for a given raster, class, mask and connectivity: the same
+inputs always produce the same numbering.
+
+They are \strong{not} a persistent identity. Patch 47 in 1985 and patch 47 in 2024
+are unrelated. Worse, IDs are not even stable across changes you might think
+are cosmetic: cropping the raster, changing the mask, switching connectivity,
+or a single cell flipping near the top-left will renumber everything after it.
+
+Never join two runs on \code{patch_id}. To follow patches through time, use
+\code{\link[=compare_patches]{compare_patches()}} or \code{\link[=track_patch_series]{track_patch_series()}}, which establish correspondence
+from actual cell overlap. \code{lineage_id} in a comparison identifies a group of
+related patches \emph{within that comparison}, and is likewise not a durable key.
+}
+
+\section{Determinism and threading}{
+
+Every kernel is single-threaded and deterministic. \code{scipy.ndimage.label()},
+the distance transform, and the NumPy reductions used here are serial C code,
+and none of them touch BLAS, so \code{OMP_NUM_THREADS} and friends have no effect
+on the result or the runtime. Re-running an analysis on the same inputs gives
+bit-for-bit identical output, on any machine with a compatible NumPy and
+SciPy. Version 1 uses one process and one core.
+}
+
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 # The two blocks touch only at a corner.
 m <- matrix(c(1, 1, 0, 0,
               1, 1, 0, 0,
@@ -105,6 +142,7 @@ m <- matrix(c(1, 1, 0, 0,
 # Diagonal contact joins them under 8-connectivity, but not under 4.
 label_patches(m, directions = 8, quiet = TRUE)$metadata$n_patches  # 1
 label_patches(m, directions = 4, quiet = TRUE)$metadata$n_patches  # 2
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=patch_metrics]{patch_metrics()}} for geometry, \code{\link[=analyze_patches]{analyze_patches()}} to do both,

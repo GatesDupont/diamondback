@@ -159,6 +159,24 @@ each of the `nrow+1` horizontal grid lines — and passes them to Python as
 counted and multiplied afterwards. The same code path serves projected rasters
 with constant vectors, so there is no separate lon/lat branch to rot.
 
+**The supported geometry is narrow, and enforced rather than assumed.** The
+method is correct for a **north-up, axis-aligned, regular** lon/lat grid, which
+is exactly what terra's data model represents: an extent plus a cell count, with
+no rotation term. Two things are checked in `db_check_grid()` rather than
+trusted:
+
+- **Rotation.** terra can carry a rotated GDAL geotransform, and `is.rotated()`
+  reports it. Every cell-index-to-map conversion here (bounding boxes,
+  centroids, per-row latitudes) assumes no rotation, so a rotated raster is
+  rejected with a pointer to `terra::rectify()` rather than silently producing
+  confident nonsense.
+- **Latitude bounds.** terra will happily construct a lon/lat raster reaching to
+  100°N. The geodesic row geometry is undefined there, so it is an error.
+
+Cells are treated as spherical quadrilaterals bounded by meridians and
+parallels. Areas come from `terra::cellSize()`, which is geodesic on the
+ellipsoid; edge lengths are geodesic distances at the relevant latitude.
+
 The one place this fails is `patch_core_area()`: the Euclidean distance transform
 needs uniform sampling, which a lon/lat grid does not have. That function errors
 on lon/lat unless `units = "cells"` is given explicitly.
@@ -190,11 +208,45 @@ error of class `diamondback_python_error` naming the operation that failed.
 a bare traceback.
 
 **13. What is needed to reproduce a run?** Everything in `metadata`: source
-fingerprint (path, size, mtime, and content hash for files under
-`hash_max_mb`), full geometry (CRS WKT, extent, resolution, dimensions), the mask
+fingerprint (path, size, mtime, and content hash — see §5 for how strong that
+is), full geometry (CRS WKT, extent, resolution, dimensions), the mask
 fingerprint, `class`, `directions`, `na` handling, cell-state counts, package
 version, algorithm version, and Python/NumPy/SciPy versions. This is also exactly
 the cache key.
+
+## 4b. Further decisions
+
+**Patch IDs are labels, not identities.** IDs are assigned in raster scan order,
+so they are deterministic: identical inputs always give identical numbering. They
+are *not* stable across anything else. Cropping, changing the mask, switching
+connectivity, or one cell flipping near the top-left renumbers everything after
+it, and patch 47 in 1985 has nothing to do with patch 47 in 2024. Nothing in the
+API invites a join on `patch_id` across runs, and the documentation says so
+outright, because it is the obvious thing for a user to try and it is silently
+wrong. Correspondence between runs comes only from `compare_patches()`, derived
+from actual cell overlap. `lineage_id` is likewise scoped to one comparison.
+
+**Threading and determinism.** Version 1 is single-process and single-threaded,
+and the results are bit-for-bit reproducible. `scipy.ndimage.label()`,
+`distance_transform_edt()`, `find_objects()` and the NumPy reductions used here
+(`bincount`, `unique`) are all serial C. None of them dispatch to BLAS, so
+`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` and friends have no effect on either
+the result or the runtime — there is no thread-count-dependent reduction order to
+perturb the arithmetic. Parallelism would have to come from a different labelling
+backend (§6), not from tuning environment variables.
+
+**The class limit.** Classes are encoded as `3 + k` in the cell-state array, so
+the ceiling is the dtype: 253 classes in `uint8`, 65,533 in `uint16`. Version 1
+picks the narrower dtype when it fits and widens automatically when it does not,
+because 252 was an arbitrary artefact of an encoding choice and real categorical
+rasters exceed it. The dtype is chosen once per run from the class count — not
+per block from the values a block happens to contain — and every comparison is by
+value, so nothing downstream knows or cares which is in use. `uint16` costs one
+extra byte per cell, which the memory estimate accounts for.
+
+Multi-class runs label each class in a **separate pass** over the raster, so cost
+scales with the class count; past 100 classes `class = "all"` warns rather than
+quietly taking an hour.
 
 ## 5. Caching
 
@@ -209,6 +261,18 @@ docstring should not throw away an hour of labeling) and too fine at once.
 
 Stale results are never reused silently: a fingerprint mismatch is reported with
 the specific field that differs, then the work is redone.
+
+**How strong is the fingerprint?** `fingerprint = "auto"` (the default) hashes
+file contents under 200 MB and falls back to path + size + mtime above that,
+because hashing a 40 GB raster to decide whether to reuse a cache can cost more
+than the labelling did. Size and mtime are a *heuristic*, not proof: a file
+rewritten at the same size with its timestamp restored would be treated as
+unchanged. `fingerprint = "full"` therefore always hashes, however large, and
+`"fast"` never does. The mode is part of the cache key, so a result cached under
+a weak fingerprint is never silently reused for a request that asked for a strong
+one — and the mode is the *first* field compared, so switching modes reports
+"fingerprint differs" rather than the technically-true-but-misleading "hash
+differs".
 
 **Canonical fields, not live values.** One side of a cache comparison has been
 through JSON and the other has not, and JSON does not preserve R's type
@@ -259,13 +323,46 @@ the failure this package exists to end.
 
 ## 7. Python environment
 
-`reticulate::py_require()` (reticulate >= 1.41) declares numpy and scipy
-requirements and lets reticulate resolve an ephemeral uv-managed environment on
-first use. Nothing is installed into the user's environments, nothing happens at
-`library()` time, and there is no `install_*()` call in any analysis path.
-`diamondback_check()` is the single diagnostic; `diamondback_python()` is the
-single place any Python is touched. Users on a managed environment can point
-`RETICULATE_PYTHON` at it and `py_require()` steps aside.
+**Running an analysis never downloads or installs anything.** This is a hard
+rule, and it took a correction to get right.
+
+The obvious design is `reticulate::py_require()` (reticulate >= 1.41): declare
+numpy and scipy, and let reticulate resolve a uv-managed environment on first
+use. It is genuinely convenient and it does not touch the user's existing
+environments. But on a machine without a suitable Python it will fetch a whole
+CPython interpreter plus numpy and scipy — ~50 MB of downloads, ~336 MB on disk
+— triggered by nothing more than a call to `label_patches()`. "It doesn't modify
+your environments, it creates a new one" is a dodge. A call to an analysis
+function is not consent to download 300 MB.
+
+So `py_require()` is only ever called after explicit consent.
+`db_python_mode()` decides where Python comes from **without initialising an
+interpreter**, and resolves in this order:
+
+| order | source | installs? |
+|---|---|---|
+| 1 | Python already initialised in the session | no |
+| 2 | `RETICULATE_PYTHON`, or `options(diamondback.python = <path>)` | no |
+| 3 | the managed environment, **if** `diamondback_install_python()` was run | already fetched |
+| 4 | any Python on `PATH` / in an active venv or conda env that already has numpy+scipy | no |
+| 5 | nothing found → **error with instructions** | no |
+
+Step 4 probes by shelling out (`python -c "import numpy, scipy"`) rather than
+going through reticulate, because initialising reticulate is itself what can
+trigger provisioning. Step 5 is the whole point: diamondback stops and tells the
+user their options rather than deciding for them.
+
+`diamondback_install_python()` is the only thing in the package that downloads.
+It states what it will fetch and roughly how large it is, asks for confirmation
+when interactive, and records consent in
+`tools::R_user_dir("diamondback", "config")` so later sessions do not re-ask.
+`diamondback_remove_python()` revokes it. The package's own test suite opts in
+explicitly (`options(diamondback.python = "managed")` in a test helper) — that
+is a deliberate, visible choice in one place, not a default.
+
+`diamondback_check()` is the single diagnostic and reports which of the five
+sources was used; `diamondback_python()` is the single place any Python is
+touched.
 
 ## 8. Validation
 

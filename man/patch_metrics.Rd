@@ -92,12 +92,14 @@ distances. Metres are the unit for lon/lat regardless of \code{units}.
 }
 
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 m <- matrix(c(1, 1, 0, 0,
               1, 1, 0, 0,
               0, 0, 0, 1,
               0, 0, 0, 1), nrow = 4, byrow = TRUE)
 res <- patch_metrics(label_patches(m, quiet = TRUE))
 res$metrics[, c("patch_id", "cells", "perimeter", "touches_domain_edge")]
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=patch_core_area]{patch_core_area()}}, \code{\link[=analyze_patches]{analyze_patches()}}

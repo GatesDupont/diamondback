@@ -54,7 +54,7 @@
 #'
 #' @seealso [patch_metrics()]
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' # A 7x7 block of habitat: with 1 m cells and depth 1, only cells more than
 #' # one cell from the edge survive, giving a 3x3 core.
 #' m <- matrix(0, 9, 9)

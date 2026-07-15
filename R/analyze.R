@@ -7,10 +7,10 @@
 #'
 #' @section Caching:
 #' A cached result is reused only when it is provably the same computation. The
-#' key covers the source fingerprint (path, size, modification time, and content
-#' hash for files under 200 MB), the raster geometry, the class, the mask, the
-#' connectivity, the NA policy, and the labelling algorithm version. Change any
-#' of them and the work is redone, with a message naming the field that differed.
+#' key covers the source fingerprint, the raster geometry, the class, the mask,
+#' the connectivity, the NA policy, and the labelling algorithm version. Change
+#' any of them and the work is redone, with a message naming the field that
+#' differed.
 #'
 #' Things that deliberately do **not** invalidate a cache: metric options, units,
 #' progress settings, and the package version. None of them can change the
@@ -18,6 +18,19 @@
 #'
 #' A large in-memory raster with no file behind it cannot be fingerprinted, and
 #' is therefore never served from cache. Point `x` at a file to get caching.
+#'
+#' @section How strong is the fingerprint?:
+#' Under the default `fingerprint = "auto"`, files under 200 MB are identified by
+#' a content hash, and larger ones by path, size and modification time. Size and
+#' mtime are a heuristic, not proof: a file rewritten at the same size with its
+#' timestamp restored (`touch -r`, some sync tools, a restored backup) would be
+#' treated as unchanged and the stale result reused.
+#'
+#' If that matters — and on a pipeline whose inputs are regenerated it might —
+#' use `fingerprint = "full"` to hash contents regardless of size. It costs a
+#' read of the file, which is still far cheaper than relabelling. The mode is
+#' part of the cache key, so switching to `"full"` correctly invalidates anything
+#' cached under `"auto"` rather than trusting it.
 #'
 #' @inheritParams label_patches
 #' @param output_dir Directory for the result. When set, the labelled raster,
@@ -34,7 +47,7 @@
 #'
 #' @seealso [label_patches()], [patch_metrics()], [compare_patches()]
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' m <- matrix(c(1, 1, 0, 0,
 #'               1, 1, 0, 1,
 #'               0, 0, 0, 1,
@@ -52,6 +65,7 @@ analyze_patches <- function(x,
                             metrics = TRUE,
                             units = c("m", "km", "cells"),
                             edge_depth = NULL,
+                            fingerprint = c("auto", "full", "fast"),
                             overwrite = FALSE,
                             max_memory_frac = 0.6,
                             memory_limit = NULL,
@@ -59,10 +73,11 @@ analyze_patches <- function(x,
                             quiet = FALSE) {
   na <- match.arg(na)
   units <- match.arg(units)
+  fingerprint <- match.arg(fingerprint)
   t0 <- Sys.time()
 
   if (!is.null(output_dir) && !isFALSE(cache)) {
-    req <- db_request_meta(x, class, directions, mask, na, crop)
+    req <- db_request_meta(x, class, directions, mask, na, crop, fingerprint)
     hit <- db_cache_lookup(output_dir, req, quiet = quiet)
     if (!is.null(hit)) {
       # A cached run without metrics still needs them if this call wants them.
@@ -77,6 +92,7 @@ analyze_patches <- function(x,
 
   res <- label_patches(
     x, class = class, directions = directions, mask = mask, na = na, crop = crop,
+    fingerprint = fingerprint,
     output = out_tif, overwrite = overwrite || !is.null(output_dir),
     max_memory_frac = max_memory_frac, memory_limit = memory_limit,
     validate = FALSE, quiet = quiet

@@ -116,11 +116,13 @@ thresholds dropped is reported.
 }
 
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 # A patch splits in two between t1 and t2.
 m1 <- matrix(0, 5, 5); m1[2:4, 2:4] <- 1
 m2 <- matrix(0, 5, 5); m2[2, 2:4] <- 1; m2[4, 2:4] <- 1
 cmp <- compare_patches(m1, m2, quiet = TRUE)
 cmp$events[, c("time", "patch_id", "event", "primary_id")]
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=track_patch_series]{track_patch_series()}} for more than two times.

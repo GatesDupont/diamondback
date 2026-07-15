@@ -83,12 +83,14 @@ an equal-area CRS first.
 }
 
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 # A 7x7 block of habitat: with 1 m cells and depth 1, only cells more than
 # one cell from the edge survive, giving a 3x3 core.
 m <- matrix(0, 9, 9)
 m[2:8, 2:8] <- 1
 res <- patch_core_area(label_patches(m, quiet = TRUE), depth = 1, quiet = TRUE)
 res$metrics[, c("patch_id", "cells", "core_cells", "core_fraction")]
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=patch_metrics]{patch_metrics()}}

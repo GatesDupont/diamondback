@@ -17,6 +17,53 @@ test_that("core area erodes a square patch by the expected ring", {
   expect_equal(d3$core_cells, 1)       # centre only
 })
 
+test_that("distance is centre-to-centre, not to the physical patch boundary", {
+  skip_if_no_python()
+  # Pins the exact convention documented in ?patch_core_area. A nominal depth
+  # means different things by half a cell depending on the reading, so the
+  # reading is nailed down here rather than left to a docstring.
+  #
+  # A 1-cell-thick strip of habitat, 30 m cells. Every cell in it is exactly
+  # one cell step (30 m) from the nearest NON-HABITAT CELL CENTRE, while the
+  # physical patch boundary is only 15 m away from each centre.
+  m <- matrix(0, 3, 7); m[2, 2:6] <- 1
+  r <- rast_from(m, res = 30)
+  core <- function(d) patch_core_area(label_patches(r, quiet = TRUE),
+                                      depth = d, quiet = TRUE)$metrics$core_cells
+
+  # If distance were measured to the boundary, every cell would be at 15 m and
+  # none would survive a depth of 15. They all do: distance is 30, not 15.
+  expect_equal(core(15), 5)
+
+  # And it is exactly one cell step, with a strictly-greater test.
+  expect_equal(core(29.9), 5)
+  expect_equal(core(30), 0)
+})
+
+test_that("the documented +res/2 recipe reproduces boundary-distance semantics", {
+  skip_if_no_python()
+  # ?patch_core_area tells users to pass depth + res/2 to measure from the
+  # physical boundary instead of cell centres. That recipe is checked here.
+  #
+  # A 9x9 block, 30 m cells. Ring k in from the edge has centre distance 30k
+  # and boundary distance 30k - 15.
+  b <- matrix(0, 11, 11); b[2:10, 2:10] <- 1
+  r <- rast_from(b, res = 30)
+  core <- function(d) patch_core_area(label_patches(r, quiet = TRUE),
+                                      depth = d, quiet = TRUE)$metrics$core_cells
+
+  # Centre rule at 20 m: every ring is 30 m or more out, so nothing is dropped.
+  expect_equal(core(20), 81)
+
+  # Boundary rule at 20 m: ring 1 is only 15 m from the boundary and should go,
+  # leaving 7x7. The recipe (20 + 15) delivers exactly that.
+  expect_equal(core(20 + 15), 49)
+
+  # Sanity on the ring structure the reasoning depends on.
+  expect_equal(core(30), 49)   # d > 30 keeps rings 2+
+  expect_equal(core(60), 25)   # d > 60 keeps rings 3+
+})
+
 test_that("a patch too small to have an interior has zero core", {
   skip_if_no_python()
   m <- matrix(0, 5, 5); m[3, 3] <- 1

@@ -1,10 +1,12 @@
 # Memory estimation. SciPy's label() needs the array in RAM, so the only
 # honest thing to do is to say what that will cost before allocating it.
 
-# Peak bytes per cell for each stage, from DESIGN.md section 10.
-#   label   : code uint8 (1) + boolean foreground (1) + int32 labels (4)
+# Peak bytes per cell for each stage, from DESIGN.md section 10. These assume a
+# uint8 code array; runs with more than 253 classes use uint16, and
+# `code_bytes` accounts for the extra byte.
+#   label   : code (1) + boolean foreground (1) + int32 labels (4)
 #   metrics : code (1) + labels (4), plus chunk-sized temporaries
-#   core    : code (1) + labels (4) + float64 EDT distances (8), minus overlap
+#   core    : code (1) + labels (4) + float64 EDT distances (8)
 BYTES_PER_CELL <- c(label = 6, metrics = 5, core = 13)
 
 #' Detect available system memory in bytes
@@ -66,9 +68,9 @@ db_fmt_bytes <- function(x) {
 #' @param stage One of "label", "metrics", "core".
 #' @return Estimated peak bytes.
 #' @noRd
-db_estimate_memory <- function(ncell, stage = "label") {
+db_estimate_memory <- function(ncell, stage = "label", code_bytes = 1) {
   stage <- match.arg(stage, names(BYTES_PER_CELL))
-  as.numeric(ncell) * BYTES_PER_CELL[[stage]]
+  as.numeric(ncell) * (BYTES_PER_CELL[[stage]] + (code_bytes - 1))
 }
 
 #' Stop before an allocation that will not fit
@@ -83,8 +85,8 @@ db_estimate_memory <- function(ncell, stage = "label") {
 #' @param memory_limit Explicit ceiling in bytes, overriding detection.
 #' @noRd
 db_check_memory <- function(ncell, stage = "label", max_memory_frac = 0.6,
-                            memory_limit = NULL, quiet = FALSE) {
-  need <- db_estimate_memory(ncell, stage)
+                            memory_limit = NULL, quiet = FALSE, code_bytes = 1) {
+  need <- db_estimate_memory(ncell, stage, code_bytes)
 
   avail <- if (!is.null(memory_limit)) as.numeric(memory_limit) else db_available_memory()
   ceiling_bytes <- if (is.na(avail)) NA_real_ else avail * max_memory_frac

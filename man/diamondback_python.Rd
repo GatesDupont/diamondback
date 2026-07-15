@@ -13,21 +13,33 @@ diamondback_python(quiet = TRUE)
 The Python module, invisibly, as a \code{python.builtin.module} object.
 }
 \description{
-Imports the bundled Python module, declaring the NumPy and SciPy
-requirements on first use. Nothing is installed into your existing Python
-environments and nothing happens when the package is loaded: the backend is
-resolved the first time a computation actually needs it.
+Resolves and imports the Python backend. Most users never call this
+directly; it runs on demand the first time a computation needs it. It is
+exported so a session can be warmed up before a long run, and so that
+\code{\link[=diamondback_check]{diamondback_check()}} has something to report on.
 }
-\details{
-Most users never call this directly. It is exported so that a session can be
-warmed up ahead of a long run, and so \code{\link[=diamondback_check]{diamondback_check()}} has something to
-report on.
+\section{This never installs anything}{
+
+Running an analysis will not download or install software. diamondback looks,
+in order, for:
+\enumerate{
+\item a Python already initialised in this session;
+\item \code{RETICULATE_PYTHON}, or a path set in \code{options(diamondback.python = )};
+\item the managed environment, if you have run \code{\link[=diamondback_install_python]{diamondback_install_python()}};
+\item any Python on your \code{PATH} (or in an active virtualenv/conda environment)
+that already has NumPy and SciPy.
 }
+
+If none of those works it stops with instructions. Downloading is only ever
+done by \code{\link[=diamondback_install_python]{diamondback_install_python()}}, which asks first.
+}
+
 \examples{
 \dontrun{
 diamondback_python()
 }
 }
 \seealso{
-\code{\link[=diamondback_check]{diamondback_check()}} for a full environment report.
+\code{\link[=diamondback_install_python]{diamondback_install_python()}} to set up an environment,
+\code{\link[=diamondback_check]{diamondback_check()}} for a full report.
 }

@@ -69,7 +69,7 @@
 #'
 #' @seealso [patch_core_area()], [analyze_patches()]
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' m <- matrix(c(1, 1, 0, 0,
 #'               1, 1, 0, 0,
 #'               0, 0, 0, 1,
@@ -281,7 +281,8 @@ db_state_from_labels <- function(r, result = NULL, quiet = FALSE) {
     n_max <- max(n_max, suppressWarnings(max(v, na.rm = TRUE)), na.rm = TRUE)
     # Label raster convention: NA -> outside, 0 -> background, >0 -> foreground.
     lab_blk <- py_try(py$code_block(v, as.integer(b$nrows), as.integer(nc),
-                                    mask = NULL, class_values = NULL),
+                                    mask = NULL, class_values = NULL,
+                                    n_classes = 1L),
                       "converting labels to cell states")
     py_try(py$set_rows(code, as.integer(b$row - 1L),
                        as.integer(b$row - 1L + b$nrows), lab_blk),

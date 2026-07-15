@@ -12,7 +12,7 @@ either way, so this is also usable in scripts.}
 }
 \value{
 A list with elements \code{r}, \code{terra}, \code{reticulate}, \code{python}, \code{numpy},
-\code{scipy}, \code{memory_gb}, \code{test_passed} and \code{ok}, invisibly.
+\code{scipy}, \code{mode}, \code{memory_gb}, \code{test_passed} and \code{ok}, invisibly.
 }
 \description{
 Checks everything the package needs and runs a small labelling operation
@@ -20,11 +20,14 @@ end-to-end, so that a green result means the whole R-to-Python path works,
 not merely that the pieces are installed.
 }
 \details{
-Call this first when something is not working, and when setting up on a new
-machine.
+This never installs anything. If no suitable Python is found it says so and
+tells you how to get one.
 }
 \examples{
 \dontrun{
 diamondback_check()
 }
+}
+\seealso{
+\code{\link[=diamondback_install_python]{diamondback_install_python()}}
 }

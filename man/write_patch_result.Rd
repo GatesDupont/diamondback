@@ -29,11 +29,13 @@ This is also the cache format used by \code{\link[=analyze_patches]{analyze_patc
 saved and a result it cached are interchangeable.
 }
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 m <- matrix(c(1, 1, 0, 0, 1, 0, 0, 1, 1), nrow = 3)
 res <- analyze_patches(m, quiet = TRUE)
 d <- file.path(tempdir(), "patches_demo")
 write_patch_result(res, d, overwrite = TRUE, quiet = TRUE)
 read_patch_result(d)
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=read_patch_result]{read_patch_result()}}

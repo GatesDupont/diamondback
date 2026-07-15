@@ -27,7 +27,9 @@ The source raster is re-read, so this costs a pass over the data. The exact
 counts are always available without that, in \code{result$metadata$cells}.
 }
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 m <- matrix(c(1, 1, NA, 0, 0, 1, 0, 1, 1), nrow = 3)
 res <- label_patches(m, quiet = TRUE)
 terra::freq(patch_domain(res))
+\dontshow{\}) # examplesIf}
 }

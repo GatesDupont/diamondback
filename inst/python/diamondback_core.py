@@ -3,11 +3,15 @@
 This module is loaded by R via reticulate.import_from_path(); it is not meant to
 be run standalone and deliberately has no CLI.
 
-Cell state codes (uint8), see DESIGN.md section 3:
+Cell state codes, see DESIGN.md section 3:
     0      outside the analysis domain
     1      missing / unknown (NA in source, inside the mask)
     2      valid background
     3 + k  foreground of class k
+
+The code array is uint8 (1 byte/cell) when there are few enough classes to fit,
+and uint16 (2 bytes/cell) otherwise. The dtype is an encoding detail: every
+comparison is by value, so nothing downstream needs to know which is in use.
 
 Conventions
 -----------
@@ -83,7 +87,28 @@ def _structure(directions):
 # Building the code array
 # --------------------------------------------------------------------------
 
-def code_block(vals, nrow, ncol, mask=None, class_values=None):
+# Codes 0-2 are the non-class states, so class k occupies code 3 + k.
+MAX_CLASSES_UINT8 = 253    # codes 3..255
+MAX_CLASSES_UINT16 = 65533  # codes 3..65535
+
+
+def code_dtype(n_classes):
+    """Smallest unsigned dtype that can encode this many classes.
+
+    Returns an np.dtype instance rather than the scalar type, so callers can
+    inspect .name and pass it straight to np.zeros().
+    """
+    n = int(n_classes)
+    if n <= MAX_CLASSES_UINT8:
+        return np.dtype(np.uint8)
+    if n <= MAX_CLASSES_UINT16:
+        return np.dtype(np.uint16)
+    raise ValueError(
+        "at most %d classes are supported in one run, got %d"
+        % (MAX_CLASSES_UINT16, n))
+
+
+def code_block(vals, nrow, ncol, mask=None, class_values=None, n_classes=1):
     """Turn one block of raster values into cell state codes.
 
     Parameters
@@ -92,19 +117,22 @@ def code_block(vals, nrow, ncol, mask=None, class_values=None):
     mask : 1D array-like or None. Non-zero and non-NaN means "inside domain".
     class_values : sequence of numbers, or None for binary treatment where any
         non-zero value is foreground.
+    n_classes : total classes in the run, which fixes the dtype. Passed
+        explicitly so that every block of a run agrees, rather than each block
+        choosing from the values it happens to contain.
 
     Precedence is outside-domain > missing > class, so an NA cell outside the
     mask is coded 0.
     """
     v = np.asarray(vals, dtype=np.float64).reshape(int(nrow), int(ncol))
-    out = np.full(v.shape, 2, dtype=np.uint8)
+    dt = code_dtype(n_classes)
+    out = np.full(v.shape, 2, dtype=dt)
 
     if class_values is None:
         out[v != 0] = 3
     else:
         cv = np.atleast_1d(np.asarray(class_values, dtype=np.float64))
-        if cv.size > 252:
-            raise ValueError("at most 252 classes are supported in one run")
+        code_dtype(cv.size)  # validates the count
         for k in range(cv.size):
             out[v == cv[k]] = 3 + k
 
@@ -118,8 +146,13 @@ def code_block(vals, nrow, ncol, mask=None, class_values=None):
 
 
 def code_counts(code):
-    """Count cells in each state. Returns a length-256 int64 array."""
-    return np.bincount(np.asarray(code).ravel(), minlength=256).astype(np.int64)
+    """Count cells in each state, indexed by code.
+
+    Length follows the dtype, so callers must not assume 256.
+    """
+    code = np.asarray(code)
+    n = 256 if code.dtype == np.uint8 else int(MAX_CLASSES_UINT16) + 3
+    return np.bincount(code.ravel(), minlength=n).astype(np.int64)
 
 
 def foreground_outside_domain(code, class_index):

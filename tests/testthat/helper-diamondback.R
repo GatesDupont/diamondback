@@ -1,3 +1,12 @@
+# diamondback never provisions Python on its own -- an analysis call is not
+# consent to download an interpreter. The test suite is a place where that
+# consent is explicit, so it opts in here and nowhere else. On a machine (or CI
+# runner) with no suitable Python this is what lets reticulate resolve one;
+# users get an error telling them to run diamondback_install_python().
+if (!nzchar(Sys.getenv("RETICULATE_PYTHON"))) {
+  options(diamondback.python = "managed")
+}
+
 # Every test needs the Python backend. Rather than let each test fail
 # separately on a machine without it, skip once with a clear reason.
 skip_if_no_python <- function() {

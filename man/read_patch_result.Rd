@@ -23,10 +23,12 @@ The NumPy arrays from the original run are gone, so the first call to
 from the raster. Everything works; the first such call just pays a read.
 }
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 m <- matrix(c(1, 1, 0, 0, 1, 0, 0, 1, 1), nrow = 3)
 d <- file.path(tempdir(), "patches_demo2")
 write_patch_result(analyze_patches(m, quiet = TRUE), d, overwrite = TRUE, quiet = TRUE)
 read_patch_result(d)
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link[=write_patch_result]{write_patch_result()}}

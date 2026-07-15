@@ -23,8 +23,16 @@ db_cache_fields <- function(meta) {
   }
   src <- function(x) {
     if (is.null(x)) return(list(type = "<none>"))
-    list(type = s(x$type), path = s(x$path), size = s(x$size),
-         mtime = s(x$mtime), hash = s(x$hash))
+    # The fingerprint mode is part of the key: a cache built under "fast"
+    # (size+mtime) must not satisfy a request that asked for "full" (content
+    # hash). Weak evidence never gets promoted to strong by being cached.
+    #
+    # It is listed first so that it is the field *reported* when the mode
+    # changes. Switching mode also changes `hash`, and "hash differs" would be
+    # a true but misleading explanation -- the hash differs because the mode
+    # did, not because the data did.
+    list(fingerprint = s(x$fingerprint), type = s(x$type), path = s(x$path),
+         size = s(x$size), mtime = s(x$mtime), hash = s(x$hash))
   }
   g <- meta$geometry
 
@@ -132,7 +140,8 @@ db_cache_lookup <- function(output_dir, request_meta, quiet = FALSE) {
 #' The cache has to be checked *before* labelling, which means the identifying
 #' metadata has to be constructible from the inputs alone.
 #' @noRd
-db_request_meta <- function(x, class, directions, mask, na, crop) {
+db_request_meta <- function(x, class, directions, mask, na, crop,
+                            fingerprint = "auto") {
   r <- db_as_rast(x)
   mask_r <- db_check_mask(mask, r)
   if (is.null(crop)) crop <- !is.null(mask_r)
@@ -144,8 +153,8 @@ db_request_meta <- function(x, class, directions, mask, na, crop) {
 
   list(
     algorithm_version = ALGORITHM_VERSION,
-    source = db_source_info(x),
-    mask_source = if (is.null(mask)) NULL else db_source_info(mask),
+    source = db_source_info(x, fingerprint),
+    mask_source = if (is.null(mask)) NULL else db_source_info(mask, fingerprint),
     geometry = db_geometry(r),
     class = if (is.null(cls)) NA_real_ else cls,
     binary = is.null(cls),

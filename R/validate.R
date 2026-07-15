@@ -30,7 +30,7 @@
 #' @return A list with `ok` (logical) and `checks` (a data frame with one row per
 #'   check: `check`, `passed`, `detail`), invisibly.
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' m <- matrix(c(1, 1, 0, NA, 1, 0, 0, 1, 1), nrow = 3)
 #' v <- validate_patch_result(analyze_patches(m, quiet = TRUE))
 #' v$ok

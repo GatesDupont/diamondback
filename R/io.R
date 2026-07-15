@@ -25,7 +25,7 @@ RESULT_FILES <- list(
 #' @return `dir`, invisibly.
 #' @seealso [read_patch_result()]
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' m <- matrix(c(1, 1, 0, 0, 1, 0, 0, 1, 1), nrow = 3)
 #' res <- analyze_patches(m, quiet = TRUE)
 #' d <- file.path(tempdir(), "patches_demo")
@@ -91,7 +91,7 @@ write_patch_result <- function(x, dir, overwrite = FALSE, quiet = FALSE) {
 #' @return A [patch_result].
 #' @seealso [write_patch_result()]
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' m <- matrix(c(1, 1, 0, 0, 1, 0, 0, 1, 1), nrow = 3)
 #' d <- file.path(tempdir(), "patches_demo2")
 #' write_patch_result(analyze_patches(m, quiet = TRUE), d, overwrite = TRUE, quiet = TRUE)

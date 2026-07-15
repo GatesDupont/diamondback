@@ -87,7 +87,7 @@
 #'
 #' @seealso [track_patch_series()] for more than two times.
 #' @export
-#' @examples
+#' @examplesIf diamondback_ready()
 #' # A patch splits in two between t1 and t2.
 #' m1 <- matrix(0, 5, 5); m1[2:4, 2:4] <- 1
 #' m2 <- matrix(0, 5, 5); m2[2, 2:4] <- 1; m2[4, 2:4] <- 1

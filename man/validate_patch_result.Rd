@@ -43,7 +43,9 @@ consistent with edge lengths;
 }
 
 \examples{
+\dontshow{if (diamondback_ready()) withAutoprint(\{ # examplesIf}
 m <- matrix(c(1, 1, 0, NA, 1, 0, 0, 1, 1), nrow = 3)
 v <- validate_patch_result(analyze_patches(m, quiet = TRUE))
 v$ok
+\dontshow{\}) # examplesIf}
 }
