@@ -103,6 +103,30 @@ Re-running `analyze_patches()` with the same inputs reads the cached result
 instead of relabelling. Change the class, the mask, the connectivity or the
 source file, and it recomputes and tells you which one changed.
 
+## Is it actually faster?
+
+Measured on an M-series Mac at 40% forest cover with 8-connectivity
+(`inst/benchmarks/benchmark-terra.R`), checking at every size that the two
+agree on the patch count:
+
+| raster | cells | diamondback | `terra::patches()` | speedup |
+| --- | --- | --- | --- | --- |
+| 500×500 | 250,000 | 0.18 s | 0.55 s | 3× |
+| 1000×1000 | 1,000,000 | 0.51 s | 8.34 s | ~16× |
+| 2000×2000 | 4,000,000 | 0.96 s | **did not finish in 20 min** | >1000× |
+
+`terra::patches()` degrades superlinearly as the patch count grows. diamondback
+stays roughly linear in cells:
+
+| raster | cells | label | metrics | core area | patches found |
+| --- | --- | --- | --- | --- | --- |
+| 4000×4000 | 16,000,000 | 2.7 s | 1.9 s | 2.3 s | 360,866 |
+| 8000×8000 | 64,000,000 | 12.4 s | 8.8 s | 11.2 s | 1,444,076 |
+
+Don't read the speedup as a fixed number — it grows with raster size and patch
+count, which is exactly why this package exists. On a small raster, `terra` is
+perfectly fine and has no Python dependency.
+
 ## The part that matters most: `NA`
 
 The most common way these analyses go quietly wrong is an `NA` becoming

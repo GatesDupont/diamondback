@@ -10,6 +10,24 @@
 #
 # Correctness is checked as it goes: any size where the two disagree on the
 # patch count is reported loudly, because a fast wrong answer is worthless.
+#
+# Measured on an M-series Mac, 40% forest cover, 8-connectivity:
+#
+#   size          cells    diamondback      terra    speedup   patches
+#   500x500     250,000          0.18s      0.55s        3x      5,708
+#   1000x1000       1e6          0.51s      8.34s      ~16x     22,758
+#   2000x2000       4e6          0.96s   >20 min      >1000x     91,020
+#
+# terra::patches() degrades superlinearly as the patch count grows -- it did
+# not finish 4 million cells within 20 minutes, where diamondback took about a
+# second. diamondback itself stays roughly linear in cells:
+#
+#   size          cells      label     metrics       core    patches
+#   4000x4000     1.6e7      2.68s       1.89s      2.30s    360,866
+#   8000x8000     6.4e7     12.44s       8.75s     11.17s  1,444,076
+#
+# Do not read the speedup column as a fixed number: it grows with raster size
+# and patch count, which is the entire reason this package exists.
 
 suppressMessages({
   library(terra)
