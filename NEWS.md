@@ -54,6 +54,14 @@ First release.
   once. `diamondback_remove_python()` revokes it.
 * `diamondback_check()` reports the full stack, names which Python source was
   used, and runs a real labelling operation end to end.
+* Most users need configure nothing: any conda environment or virtualenv with
+  NumPy and SciPy is found automatically, deterministically, and reported.
+* `options(diamondback.python = )` accepts an environment **name**
+  (`"geo"`, `"python3"`) as well as a path, resolved against active
+  environments, the `PATH`, conda installations and virtualenvs. Names are
+  verified to have NumPy and SciPy before use.
+* When no suitable Python exists, the error lists the environments that were
+  found rather than leaving you to hunt for a path.
 
 ## Limits and conventions made explicit
 

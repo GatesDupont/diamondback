@@ -50,24 +50,33 @@ Available RAM: 21.4 GB
 v Labelling a small test raster succeeded. diamondback is ready.
 ```
 
-If you don't have NumPy and SciPy anywhere, you have three choices, and
-diamondback names them rather than picking for you:
+Usually there is nothing to configure: diamondback finds any conda environment
+or virtualenv that already has NumPy and SciPy, and reports which one it took.
+
+To choose a specific one, give its **name** — you don't need to know where it
+lives:
 
 ```r
-# 1. Install them into the Python you already use:
-#    pip install numpy scipy
+options(diamondback.python = "geo")       # a conda env or virtualenv named "geo"
+options(diamondback.python = "python3")   # whatever python3 means on your PATH
+options(diamondback.python = "/opt/envs/geo/bin/python")   # a path works too
+```
 
-# 2. Point diamondback at an environment that has them:
-options(diamondback.python = "/path/to/python")
+If nothing on the machine has NumPy and SciPy, diamondback lists the
+environments it found and leaves the choice to you:
 
-# 3. Let diamondback set up a private environment. This is the only thing in
-#    the package that downloads (~200 MB), and it tells you what it will do
-#    and asks first. Your existing environments are not modified.
+```r
+# Install into one you already have:
+#   conda install -n geo numpy scipy     /     pip install numpy scipy
+
+# Or let diamondback set up a private environment. This is the only thing in
+# the package that downloads (~200 MB); it says what it will do and asks first,
+# and your existing environments are not modified.
 diamondback_install_python()
 ```
 
-Consent from option 3 is remembered, so it is asked once, not every session;
-`diamondback_remove_python()` revokes it.
+Consent from the last option is remembered, so it is asked once, not every
+session; `diamondback_remove_python()` revokes it.
 
 ## Quick start
 

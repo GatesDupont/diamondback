@@ -24,14 +24,36 @@ Running an analysis will not download or install software. diamondback looks,
 in order, for:
 \enumerate{
 \item a Python already initialised in this session;
-\item \code{RETICULATE_PYTHON}, or a path set in \code{options(diamondback.python = )};
+\item \code{RETICULATE_PYTHON}, or \code{options(diamondback.python = )};
 \item the managed environment, if you have run \code{\link[=diamondback_install_python]{diamondback_install_python()}};
-\item any Python on your \code{PATH} (or in an active virtualenv/conda environment)
-that already has NumPy and SciPy.
+\item any environment it can find that already has NumPy and SciPy --- an active
+virtualenv or conda environment, \code{python} on your \code{PATH}, any conda
+environment, any virtualenv under \code{WORKON_HOME}.
 }
 
-If none of those works it stops with instructions. Downloading is only ever
-done by \code{\link[=diamondback_install_python]{diamondback_install_python()}}, which asks first.
+If none of those works it stops, \strong{lists the environments it found}, and
+tells you how to proceed. Downloading is only ever done by
+\code{\link[=diamondback_install_python]{diamondback_install_python()}}, which asks first.
+}
+
+\section{Naming an environment}{
+
+\code{options(diamondback.python = )} takes an environment \strong{name}, not just a
+path, so you rarely need to know where anything lives:
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{options(diamondback.python = "geo")     # a conda env or virtualenv called "geo"
+options(diamondback.python = "python3") # whatever python3 means on your PATH
+options(diamondback.python = "/opt/envs/geo/bin/python")  # still fine
+}\if{html}{\out{</div>}}
+
+A name is resolved against active environments, your \code{PATH}, conda
+environments (found from \code{CONDA_EXE}, \code{CONDA_PREFIX}, and the usual install
+roots) and virtualenvs. Whatever it resolves to is verified to have NumPy and
+SciPy before it is used, and if the name matches nothing you get the list of
+names that do exist. \code{"auto"}, \code{"managed"} and \code{"system"} are reserved.
+
+If you have exactly one environment with NumPy and SciPy, you can usually
+skip this entirely: it will be found.
 }
 
 \examples{

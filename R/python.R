@@ -47,32 +47,147 @@ db_python_option <- function() {
   "auto"
 }
 
+#' Interpreter paths inside an environment prefix
+#' @noRd
+db_python_bin <- function(prefix) {
+  if (.Platform$OS.type == "windows") {
+    c(file.path(prefix, "python.exe"), file.path(prefix, "Scripts", "python.exe"))
+  } else {
+    file.path(prefix, "bin", "python")
+  }
+}
+
+#' Plausible conda/mamba installation roots
+#'
+#' `reticulate::conda_list()` is the obvious source and cannot be the only one:
+#' on a Homebrew miniforge layout it returns a single bogus entry named "envs"
+#' pointing at a python that does not exist, and never sees the real
+#' environments. So the roots are also searched directly. Everything found is
+#' verified by actually importing NumPy and SciPy, so a wrong guess here costs
+#' nothing but a moment.
+#' @noRd
+db_conda_roots <- function() {
+  roots <- character()
+
+  ce <- Sys.getenv("CONDA_EXE", "")            # <root>/bin/conda
+  if (nzchar(ce)) roots <- c(roots, dirname(dirname(ce)))
+
+  cp <- Sys.getenv("CONDA_PREFIX", "")
+  if (nzchar(cp)) {
+    roots <- c(roots, cp)                       # base, or an active env
+    if (identical(basename(dirname(cp)), "envs")) {
+      roots <- c(roots, dirname(dirname(cp)))   # the root above an active env
+    }
+  }
+
+  roots <- c(
+    roots,
+    path.expand(c("~/miniforge3", "~/mambaforge", "~/miniconda3", "~/anaconda3",
+                  "~/opt/anaconda3", "~/opt/miniconda3")),
+    "/opt/homebrew/Caskroom/miniforge/base",
+    "/opt/conda"
+  )
+  unique(roots[nzchar(roots) & dir.exists(roots)])
+}
+
+#' Every Python interpreter we can find, each with the name you would call it
+#'
+#' Ordered by how strong a signal the user gave: an activated environment first,
+#' then whatever `python` means on the PATH, then conda environments, then
+#' virtualenvs. Environment lists are sorted so that auto-detection is
+#' deterministic rather than filesystem-order dependent.
+#'
+#' Nothing here initialises reticulate: doing so is what can trigger
+#' provisioning, which must never happen by accident.
+#' @noRd
+db_python_candidates <- function() {
+  cand <- list()
+  push <- function(name, prefix = NULL, python = NULL) {
+    ps <- if (is.null(python)) db_python_bin(prefix) else python
+    ps <- ps[nzchar(ps) & file.exists(ps)]
+    if (length(ps)) {
+      cand[[length(cand) + 1L]] <<- list(name = name, python = unname(ps[1]))
+    }
+  }
+
+  # An activated environment is an explicit statement of intent.
+  ve <- Sys.getenv("VIRTUAL_ENV", "")
+  if (nzchar(ve)) push(basename(ve), prefix = ve)
+  cp <- Sys.getenv("CONDA_PREFIX", "")
+  if (nzchar(cp)) push(basename(cp), prefix = cp)
+
+  # Whatever "python" already means here.
+  for (exe in c("python3", "python")) {
+    w <- unname(Sys.which(exe))
+    if (nzchar(w)) push(exe, python = w)
+  }
+
+  # conda: the base install, then each environment under it.
+  for (root in db_conda_roots()) {
+    push(basename(root), prefix = root)
+    envs <- tryCatch(
+      sort(list.dirs(file.path(root, "envs"), recursive = FALSE, full.names = TRUE)),
+      error = function(e) character()
+    )
+    for (e in envs) push(basename(e), prefix = e)
+  }
+
+  # Anything reticulate knows about that actually exists.
+  cl <- tryCatch(reticulate::conda_list(), error = function(e) NULL)
+  if (is.data.frame(cl) && nrow(cl)) {
+    for (i in seq_len(nrow(cl))) push(cl$name[i], python = cl$python[i])
+  }
+
+  # virtualenvs
+  wh <- Sys.getenv("WORKON_HOME", "")
+  if (!nzchar(wh)) wh <- path.expand("~/.virtualenvs")
+  if (dir.exists(wh)) {
+    for (e in sort(list.dirs(wh, recursive = FALSE, full.names = TRUE))) {
+      push(basename(e), prefix = e)
+    }
+  }
+
+  if (!length(cand)) return(cand)
+  paths <- vapply(cand, `[[`, character(1), "python")
+  cand[!duplicated(paths)]
+}
+
+#' Does this interpreter have what the kernels need?
+#'
+#' Shells out rather than going through reticulate, which can only be pointed at
+#' one interpreter per session and whose initialisation is what may provision.
+#' @noRd
+db_has_deps <- function(python) {
+  isTRUE(tryCatch({
+    out <- suppressWarnings(system2(python, c("-c", shQuote("import numpy, scipy")),
+                                    stdout = TRUE, stderr = TRUE))
+    is.null(attr(out, "status")) || identical(attr(out, "status"), 0L)
+  }, error = function(e) FALSE))
+}
+
 #' Find a Python that already has NumPy and SciPy
 #'
-#' Shells out to candidate interpreters rather than going through reticulate,
-#' because initialising reticulate is itself what can trigger provisioning.
-#' Returns a path, or NULL.
+#' Returns a path, or NULL. Any environment with NumPy and SciPy serves equally
+#' well -- diamondback only uses them for its own kernels, not for your analysis
+#' -- so taking the first that qualifies is not a compromise, and
+#' [diamondback_check()] always reports which one was taken.
 #' @noRd
 db_probe_python <- function() {
-  cands <- c(
-    if (nzchar(Sys.getenv("VIRTUAL_ENV"))) {
-      file.path(Sys.getenv("VIRTUAL_ENV"), if (.Platform$OS.type == "windows") "Scripts/python.exe" else "bin/python")
-    },
-    if (nzchar(Sys.getenv("CONDA_PREFIX"))) {
-      file.path(Sys.getenv("CONDA_PREFIX"), if (.Platform$OS.type == "windows") "python.exe" else "bin/python")
-    },
-    unname(Sys.which("python3")),
-    unname(Sys.which("python"))
-  )
-  cands <- unique(cands[nzchar(cands) & file.exists(cands)])
+  for (cd in db_python_candidates()) {
+    if (db_has_deps(cd$python)) return(cd$python)
+  }
+  NULL
+}
 
-  for (p in cands) {
-    ok <- tryCatch({
-      out <- suppressWarnings(system2(p, c("-c", shQuote("import numpy, scipy")),
-                                      stdout = TRUE, stderr = TRUE))
-      is.null(attr(out, "status")) || identical(attr(out, "status"), 0L)
-    }, error = function(e) FALSE)
-    if (isTRUE(ok)) return(p)
+#' Resolve an environment *name* to an interpreter path
+#'
+#' So that `options(diamondback.python = "geo")` works and nobody has to go
+#' hunting for `.../envs/geo/bin/python`. Returns a path, or NULL if no
+#' environment goes by that name.
+#' @noRd
+db_resolve_env_name <- function(name) {
+  for (cd in db_python_candidates()) {
+    if (identical(cd$name, name)) return(cd$python)
   }
   NULL
 }
@@ -97,15 +212,32 @@ db_python_mode <- function() {
 
   mode <- db_python_option()
 
-  # An explicit path is a user decision; honour it and never install over it.
+  # Anything that is not a keyword is a user decision: a path, or the name of an
+  # environment. Honour it, and never install over it.
   if (!mode %in% c("auto", "managed", "system")) {
-    if (!file.exists(mode)) {
-      cli::cli_abort(c(
-        "The Python set in {.code diamondback.python} does not exist.",
-        "x" = "{.path {mode}}"
-      ), call = NULL)
+    py <- if (file.exists(mode)) mode else db_resolve_env_name(mode)
+
+    if (is.null(py)) {
+      looks_like_path <- grepl("[/\\\\]", mode) || grepl("\\.exe$", mode)
+      if (looks_like_path) {
+        cli::cli_abort(c(
+          "The Python set in {.code diamondback.python} does not exist.",
+          "x" = "{.path {mode}}"
+        ), call = NULL)
+      }
+      db_env_name_error(mode)
     }
-    Sys.setenv(RETICULATE_PYTHON = mode)
+
+    if (!db_has_deps(py)) {
+      cli::cli_abort(c(
+        "The Python set in {.code diamondback.python} is missing NumPy or SciPy.",
+        "x" = "{.path {py}}",
+        "i" = "Install them there, e.g. {.code {py} -m pip install numpy scipy}, \\
+               or point at a different environment."
+      ), class = "diamondback_python_missing", call = NULL)
+    }
+
+    Sys.setenv(RETICULATE_PYTHON = py)
     return("user")
   }
 
@@ -136,13 +268,34 @@ db_python_mode <- function() {
 #' in order, for:
 #'
 #' 1. a Python already initialised in this session;
-#' 2. `RETICULATE_PYTHON`, or a path set in `options(diamondback.python = )`;
+#' 2. `RETICULATE_PYTHON`, or `options(diamondback.python = )`;
 #' 3. the managed environment, if you have run [diamondback_install_python()];
-#' 4. any Python on your `PATH` (or in an active virtualenv/conda environment)
-#'    that already has NumPy and SciPy.
+#' 4. any environment it can find that already has NumPy and SciPy --- an active
+#'    virtualenv or conda environment, `python` on your `PATH`, any conda
+#'    environment, any virtualenv under `WORKON_HOME`.
 #'
-#' If none of those works it stops with instructions. Downloading is only ever
-#' done by [diamondback_install_python()], which asks first.
+#' If none of those works it stops, **lists the environments it found**, and
+#' tells you how to proceed. Downloading is only ever done by
+#' [diamondback_install_python()], which asks first.
+#'
+#' @section Naming an environment:
+#' `options(diamondback.python = )` takes an environment **name**, not just a
+#' path, so you rarely need to know where anything lives:
+#'
+#' ```r
+#' options(diamondback.python = "geo")     # a conda env or virtualenv called "geo"
+#' options(diamondback.python = "python3") # whatever python3 means on your PATH
+#' options(diamondback.python = "/opt/envs/geo/bin/python")  # still fine
+#' ```
+#'
+#' A name is resolved against active environments, your `PATH`, conda
+#' environments (found from `CONDA_EXE`, `CONDA_PREFIX`, and the usual install
+#' roots) and virtualenvs. Whatever it resolves to is verified to have NumPy and
+#' SciPy before it is used, and if the name matches nothing you get the list of
+#' names that do exist. `"auto"`, `"managed"` and `"system"` are reserved.
+#'
+#' If you have exactly one environment with NumPy and SciPy, you can usually
+#' skip this entirely: it will be found.
 #'
 #' @param quiet Suppress the startup message.
 #' @return The Python module, invisibly, as a `python.builtin.module` object.
@@ -301,21 +454,68 @@ db_int_rows <- function(rows) {
   as.integer(v)
 }
 
-db_python_missing_error <- function() {
-  cli::cli_abort(
-    c(
-      "diamondback needs Python with NumPy and SciPy, and could not find one.",
-      "x" = "No Python on your {.envvar PATH} has both installed.",
-      "i" = "diamondback will not download anything on its own. Pick one:",
-      "*" = "{.run diamondback_install_python()} -- set up a private environment \\
-             for diamondback (downloads ~200 MB; asks first).",
-      "*" = "Install them into the Python you already use: {.code pip install numpy scipy}.",
-      "*" = "Point diamondback at an environment that has them: \\
-             {.code options(diamondback.python = \"/path/to/python\")}."
-    ),
-    class = "diamondback_python_missing",
-    call = NULL
+#' A short, de-duplicated list of the environment names we can see
+#' @noRd
+db_known_env_names <- function(cands = NULL) {
+  if (is.null(cands)) cands <- tryCatch(db_python_candidates(), error = function(e) list())
+  if (!length(cands)) return(character())
+  unique(vapply(cands, `[[`, character(1), "name"))
+}
+
+db_env_name_error <- function(name) {
+  known <- db_known_env_names()
+  bullets <- c(
+    "No Python environment named {.val {name}} was found.",
+    "x" = "{.code options(diamondback.python = {.val {name}})} matched neither a \\
+           file path nor an environment name."
   )
+  if (length(known)) {
+    bullets <- c(
+      bullets,
+      "i" = "Environments diamondback can see: {.val {utils::head(known, 12)}}."
+    )
+  }
+  bullets <- c(
+    bullets,
+    "i" = "You can also give a full path to a Python interpreter, or run \\
+           {.run diamondback_check()} to see what was found."
+  )
+  cli::cli_abort(bullets, class = "diamondback_python_missing", call = NULL)
+}
+
+db_python_missing_error <- function() {
+  cands <- tryCatch(db_python_candidates(), error = function(e) list())
+
+  bullets <- c(
+    "diamondback needs Python with NumPy and SciPy, and could not find one.",
+    "x" = "No Python environment that diamondback can see has both installed."
+  )
+
+  # Leaving a user to hunt for a path when we have just enumerated every
+  # interpreter on the machine would be unkind. Name them, so the fix is a
+  # copy-paste rather than a search.
+  if (length(cands)) {
+    nm <- vapply(cands, `[[`, character(1), "name")
+    py <- vapply(cands, `[[`, character(1), "python")
+    shown <- utils::head(sprintf("%s  (%s)", nm, py), 8)
+    bullets <- c(
+      bullets,
+      "i" = "Environments found, none of which has both NumPy and SciPy:",
+      stats::setNames(shown, rep(" ", length(shown)))
+    )
+  }
+
+  bullets <- c(
+    bullets,
+    "i" = "diamondback will not download anything on its own. Pick one:",
+    "*" = "Install them into an environment you already have, e.g. \\
+           {.code conda install -n <env> numpy scipy} or {.code pip install numpy scipy}.",
+    "*" = "Point diamondback at an environment, by name or by path: \\
+           {.code options(diamondback.python = \"myenv\")}.",
+    "*" = "{.run diamondback_install_python()} -- set up a private environment \\
+           for diamondback (downloads ~200 MB; asks first)."
+  )
+  cli::cli_abort(bullets, class = "diamondback_python_missing", call = NULL)
 }
 
 db_python_setup_error <- function(e, mode = "unknown") {
