@@ -48,13 +48,32 @@
 #' as well as the counts, so a rule based on proportion rather than absolute
 #' overlap is a one-line re-derivation.
 #'
-#' @section Thresholds:
+#' @section Thresholds, and seeing what they did:
 #' Defaults keep every overlap, because discarding evidence should be a decision
 #' you make rather than one made for you. But classification is acutely sensitive
-#' to slivers: a patch donating a single cell to a neighbour registers as a split
-#' under `min_overlap_cells = 1`. If your rasters are noisy, raise
-#' `min_overlap_prop` to something like `0.01`. The number of links the
-#' thresholds dropped is reported.
+#' to slivers: a patch that donates 99.9% of itself to one descendant and a
+#' single cell to another is called a `split` under `min_overlap_cells = 1`,
+#' which is arguably not a meaningful description of what happened.
+#'
+#' So nothing is hidden. Thresholded links are **flagged, not deleted**:
+#' `$overlaps` keeps every overlapping pair with a `passes_threshold` column.
+#' And every patch is classified **twice** --- `event` uses only links that
+#' passed, `event_all_overlaps` uses all of them, and
+#' `threshold_changed_event` marks the patches where the two disagree.
+#' `metadata$n_events_changed_by_threshold` counts them, and both thresholds are
+#' stored in `metadata`.
+#'
+#' The point is that two analyses of the same rasters cannot disagree without the
+#' cause being visible in the output. If `threshold_changed_event` is all
+#' `FALSE`, your thresholds did not matter and the classification is robust. If
+#' it is not, those are exactly the patches to look at.
+#'
+#' **Which knob suppresses a sliver.** A link passes `min_overlap_prop` if it is
+#' a big enough share of **either** side, so that a small patch absorbed whole
+#' into a large one is not discarded. The consequence is worth knowing: a
+#' one-cell descendant is 100% of *itself*, so `min_overlap_prop` can never
+#' suppress it, however large you set it. Use `min_overlap_cells` for absolute
+#' slivers, and `min_overlap_prop` for links that are trivial to both sides.
 #'
 #' @param x1,x2 The two times. Each may be a [patch_result], or any input
 #'   [label_patches()] accepts, in which case it is labelled first using
@@ -141,14 +160,17 @@ compare_patches <- function(x1, x2,
     overlaps$prop_t1_retained <- overlaps$overlap_cells / overlaps$cells1
     overlaps$prop_t2_inherited <- overlaps$overlap_cells / overlaps$cells2
 
-    keep <- overlaps$overlap_cells >= min_overlap_cells &
+    # Thresholded links are *flagged*, not deleted. The overlap table is the
+    # raw evidence, and dropping rows from it would defeat that: a user could
+    # not see what the threshold decided on their behalf.
+    overlaps$passes_threshold <-
+      overlaps$overlap_cells >= min_overlap_cells &
       (overlaps$prop_t1_retained >= min_overlap_prop |
          overlaps$prop_t2_inherited >= min_overlap_prop)
-    n_dropped <- sum(!keep)
-    overlaps <- overlaps[keep, , drop = FALSE]
+    n_dropped <- sum(!overlaps$passes_threshold)
     if (n_dropped > 0 && !quiet) {
       cli::cli_alert_info(
-        "Thresholds dropped {n_dropped} of {n_raw} overlap link{?s} as incidental."
+        "Thresholds set aside {n_dropped} of {n_raw} overlap link{?s} as incidental."
       )
     }
   } else {
@@ -156,15 +178,37 @@ compare_patches <- function(x1, x2,
     overlaps$cells1 <- numeric(0); overlaps$cells2 <- numeric(0)
     overlaps$overlap_area_m2 <- numeric(0)
     overlaps$prop_t1_retained <- numeric(0); overlaps$prop_t2_inherited <- numeric(0)
+    overlaps$passes_threshold <- logical(0)
   }
 
-  overlaps <- db_rank_overlaps(overlaps, cells1, cells2)
-  lineage <- db_lineages(overlaps, length(cells1), length(cells2))
-  events <- db_events(overlaps, cells1, cells2, lineage)
+  kept <- overlaps[overlaps$passes_threshold, , drop = FALSE]
+
+  # Classify twice: once using every overlap, once using only those that passed.
+  # Event classes are acutely threshold-sensitive -- one incidental cell turns
+  # "persisted" into "split" -- so both readings are reported and any patch whose
+  # label depends on the threshold is counted. Without this, two analyses could
+  # label the same transition differently with no visible cause.
+  lin_all <- db_lineages(overlaps, length(cells1), length(cells2))
+  lin_kept <- db_lineages(kept, length(cells1), length(cells2))
+
+  ranked_kept <- db_rank_overlaps(kept, cells1, cells2)
+  events <- db_events(ranked_kept, cells1, cells2, lin_kept)
+  events_all <- db_events(db_rank_overlaps(overlaps, cells1, cells2),
+                          cells1, cells2, lin_all)
+
+  events$event_all_overlaps <- events_all$event
+  events$n_links_all_overlaps <- events_all$n_links
+  events$threshold_changed_event <- events$event != events$event_all_overlaps
+  n_changed <- sum(events$threshold_changed_event)
+
+  # Carry the ranks back onto the full table; non-passing links have no rank
+  # because lineage is not built from them.
+  overlaps <- db_merge_ranks(overlaps, ranked_kept)
 
   ord <- order(overlaps$id1, -overlaps$overlap_cells)
   overlaps <- overlaps[ord, , drop = FALSE]
   rownames(overlaps) <- NULL
+  lineage <- lin_kept
 
   meta <- list(
     created = as.character(Sys.time()),
@@ -172,10 +216,14 @@ compare_patches <- function(x1, x2,
     elapsed_secs = db_elapsed_num(t0),
     n_patches_t1 = length(cells1),
     n_patches_t2 = length(cells2),
-    n_links = nrow(overlaps),
+    n_links = nrow(kept),
+    n_links_all = n_raw,
     n_links_dropped = n_dropped,
+    # The knobs that produced these labels, stored with them. A comparison
+    # should never be reproducible only by remembering what you typed.
     min_overlap_cells = min_overlap_cells,
     min_overlap_prop = min_overlap_prop,
+    n_events_changed_by_threshold = n_changed,
     geometry = db_geometry(r),
     t1 = .subset2(p1, "metadata"),
     t2 = .subset2(p2, "metadata")
@@ -257,6 +305,30 @@ db_patch_cells <- function(p, st) {
   }
   py_num(py_try(db_py()$patch_stats(st$labels, as.integer(st$n)),
                 "counting patch cells"), "count")[-1]
+}
+
+#' Put ranks from the passing links back onto the full overlap table
+#'
+#' Non-passing links get NA ranks rather than a rank of their own: lineage is
+#' built only from links that passed, so a rank for a link that took no part in
+#' it would be a fiction.
+#' @noRd
+db_merge_ranks <- function(all_ov, ranked) {
+  n <- nrow(all_ov)
+  int_cols <- c("rank_from_t1", "rank_from_t2")
+  lgl_cols <- c("is_primary_descendant", "is_primary_predecessor",
+                "tie_from_t1", "tie_from_t2")
+  # rep() rather than a scalar: a zero-row overlap table (nothing overlapped at
+  # all) must still come back with the full set of columns.
+  for (cn in int_cols) all_ov[[cn]] <- rep(NA_integer_, n)
+  for (cn in lgl_cols) all_ov[[cn]] <- rep(NA, n)
+  if (!nrow(ranked) || !n) return(all_ov)
+
+  key_all <- paste(all_ov$id1, all_ov$id2, sep = "_")
+  key_rk <- paste(ranked$id1, ranked$id2, sep = "_")
+  i <- match(key_rk, key_all)
+  for (cn in c(int_cols, lgl_cols)) all_ov[[cn]][i] <- ranked[[cn]]
+  all_ov
 }
 
 #' Rank descendants and predecessors, and mark the primary of each
@@ -447,6 +519,13 @@ print.patch_comparison <- function(x, ...) {
     n_tie <- sum(ev$primary_tie, na.rm = TRUE)
     if (n_tie > 0) {
       cli::cli_alert_warning("{n_tie} patch{?es} had a tied primary link, resolved by size then ID.")
+    }
+    n_chg <- m$n_events_changed_by_threshold %||% 0L
+    if (n_chg > 0) {
+      cli::cli_alert_warning(
+        "{n_chg} patch{?es} would be classified differently without the overlap \\
+         thresholds (see {.code $events$event_all_overlaps})."
+      )
     }
   }
   cli::cli_text("")

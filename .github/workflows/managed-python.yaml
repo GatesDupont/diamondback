@@ -1,0 +1,86 @@
+# The one job that is *allowed* to provision Python from inside R.
+#
+# R-CMD-check.yaml installs NumPy and SciPy itself and points RETICULATE_PYTHON
+# at them, so it never exercises diamondback_install_python(). That path still
+# needs testing, because it is what a user with no Python will run. It gets its
+# own small job on a runner with no NumPy or SciPy, where the download is the
+# point rather than a side effect.
+#
+# Kept separate so that a failure here reads as "the managed-environment path
+# broke", not "the test suite is red".
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # reticulate and uv resolve versions at run time, so this can break without
+    # anything in this repo changing. Weekly is enough to notice.
+    - cron: '0 6 * * 1'
+
+name: managed-python
+
+jobs:
+  managed-python:
+    runs-on: ubuntu-latest
+    name: diamondback_install_python()
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          needs: check
+
+      # Deliberately no setup-python and no pip install: this job starts with
+      # whatever the runner has, which is a Python without SciPy.
+      - name: Confirm the runner has no usable backend
+        run: |
+          Rscript -e '
+            pkgload::load_all(".", quiet = TRUE)
+            mode <- diamondback:::db_python_mode()
+            cat("resolved mode:", mode, "\n")
+            if (mode != "none") {
+              cat("note: this runner already has a usable Python; the refusal path\n")
+              cat("      cannot be exercised here, but the installer still can.\n")
+            } else {
+              # An analysis must refuse rather than download.
+              err <- tryCatch(
+                diamondback::label_patches(matrix(c(1, 0, 0, 1), 2, 2), quiet = TRUE),
+                error = conditionMessage)
+              cat("refusal message:\n", err, "\n")
+              stopifnot(grepl("will not download anything on its own", err))
+            }'
+
+      - name: diamondback_install_python()
+        run: |
+          Rscript -e '
+            pkgload::load_all(".", quiet = TRUE)
+            # prompt = FALSE is the scripted opt-in: an explicit statement that
+            # the download is expected here.
+            ok <- diamondback::diamondback_install_python(prompt = FALSE)
+            stopifnot(isTRUE(ok))'
+
+      - name: Verify the managed environment works end to end
+        run: |
+          Rscript -e '
+            pkgload::load_all(".", quiet = TRUE)
+            chk <- diamondback::diamondback_check()
+            stopifnot(isTRUE(chk$ok), identical(chk$mode, "managed"))
+            cat("managed backend OK:", chk$python, chk$numpy, chk$scipy, "\n")'
+
+      - name: Verify consent can be revoked
+        run: |
+          Rscript -e '
+            pkgload::load_all(".", quiet = TRUE)
+            stopifnot(isTRUE(diamondback::diamondback_remove_python()))
+            stopifnot(!file.exists(diamondback:::db_consent_file()))
+            cat("consent revoked cleanly\n")'

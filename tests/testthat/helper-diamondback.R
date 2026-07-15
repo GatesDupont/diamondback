@@ -1,20 +1,24 @@
-# diamondback never provisions Python on its own -- an analysis call is not
-# consent to download an interpreter. The test suite is a place where that
-# consent is explicit, so it opts in here and nowhere else. On a machine (or CI
-# runner) with no suitable Python this is what lets reticulate resolve one;
-# users get an error telling them to run diamondback_install_python().
-if (!nzchar(Sys.getenv("RETICULATE_PYTHON"))) {
-  options(diamondback.python = "managed")
-}
-
-# Every test needs the Python backend. Rather than let each test fail
-# separately on a machine without it, skip once with a clear reason.
+# The tests assume the backend already exists; they never provision it. On CI it
+# is installed by the workflow (see .github/workflows/R-CMD-check.yaml), which
+# pins the versions and puts them in the log, and RETICULATE_PYTHON points here.
+# Locally, any Python with NumPy and SciPy will do, or run
+# diamondback_install_python() once.
+#
+# Nothing here sets options(diamondback.python = "managed"). A test helper that
+# authorises downloads is a config people copy, and it hides an install inside
+# what looks like a test run. diamondback_install_python() is covered by its own
+# CI job instead.
 skip_if_no_python <- function() {
   ok <- tryCatch({
     diamondback_python(quiet = TRUE)
     TRUE
   }, error = function(e) FALSE)
-  testthat::skip_if_not(ok, "Python backend (NumPy + SciPy) not available")
+  testthat::skip_if_not(
+    ok,
+    paste("Python backend (NumPy + SciPy) not available.",
+          "Point RETICULATE_PYTHON at an environment that has them,",
+          "or run diamondback_install_python().")
+  )
 }
 
 # A projected raster with 10 m square cells, built from a matrix so that tests

@@ -288,9 +288,20 @@ def edge_lengths(labels, code, n, dy_by_row, dx_by_gridline, na_background=False
     a different label, or lies on the grid border. Diagonal contact contributes
     nothing: corner-touching cells share no physical boundary.
 
-    "valid"  = the neighbour is in-domain and not missing (real habitat edge).
-    "domain" = the neighbour is outside the domain, missing, or off-grid
-               (an artefact of the study area).
+    The far side is classified into three kinds, mirroring the cell states.
+    Lumping the last two together would say that a patch beside an unsurveyed
+    hole and a patch cut off by the study-area boundary are the same thing, and
+    they are not:
+
+    "valid"   = an in-domain, known cell (background, or another class).
+                Real habitat edge: the patch genuinely stops here.
+    "missing" = a cell inside the domain whose value is unknown (code 1).
+                The patch may continue into it; nobody looked.
+    "outside" = a cell excluded by the mask (code 0), or off the grid.
+                An artefact of where the study area was drawn.
+
+    With na_background, the caller has declared NA to mean genuine absence, so
+    missing cells count as real habitat edge and "missing" is always zero.
 
     dy_by_row : length-nrow, north-south extent of a cell in each row. Weighs
         vertical edges (left/right neighbours).
@@ -309,32 +320,36 @@ def edge_lengths(labels, code, n, dy_by_row, dx_by_gridline, na_background=False
     dx = np.asarray(dx_by_gridline, dtype=np.float64)
 
     valid_len = np.zeros(n + 1, dtype=np.float64)
-    domain_len = np.zeros(n + 1, dtype=np.float64)
+    missing_len = np.zeros(n + 1, dtype=np.float64)
+    outside_len = np.zeros(n + 1, dtype=np.float64)
     ns_cells = np.zeros(n + 1, dtype=np.int64)   # vertical edges
     ew_cells = np.zeros(n + 1, dtype=np.int64)   # horizontal edges
     valid_cells = np.zeros(n + 1, dtype=np.int64)
-    domain_cells = np.zeros(n + 1, dtype=np.int64)
+    missing_cells = np.zeros(n + 1, dtype=np.int64)
+    outside_cells = np.zeros(n + 1, dtype=np.int64)
 
-    def _is_valid(c):
-        # A neighbour counts as real habitat edge if it is in-domain and known.
+    # Neighbour kind: 0 = outside, 1 = missing, 2 = valid. With na_background a
+    # missing neighbour is real habitat edge, so it is promoted to valid.
+    def _nb_kind(c):
+        k = np.where(c >= 2, 2, c).astype(np.uint8)
         if na_background:
-            return c >= 1
-        return c >= 2
+            k = np.where(k == 1, 2, k).astype(np.uint8)
+        return k
 
-    def _accum(lab_sel, nb_valid, w, vertical):
-        """lab_sel: labels of exposed cells; nb_valid: bool, same shape."""
+    def _accum(lab_sel, kind, w, vertical):
+        """lab_sel: labels of exposed cells; kind: neighbour kind, same shape."""
         if lab_sel.size == 0:
             return
-        vs = nb_valid
-        if vs.any():
-            l = lab_sel[vs]
-            valid_len[:] += np.bincount(l, weights=w[vs], minlength=n + 1)
-            valid_cells[:] += np.bincount(l, minlength=n + 1)
-        ds = ~nb_valid
-        if ds.any():
-            l = lab_sel[ds]
-            domain_len[:] += np.bincount(l, weights=w[ds], minlength=n + 1)
-            domain_cells[:] += np.bincount(l, minlength=n + 1)
+        for k, (lsum, lcnt) in enumerate((
+            (outside_len, outside_cells),
+            (missing_len, missing_cells),
+            (valid_len, valid_cells),
+        )):
+            sel = kind == k
+            if sel.any():
+                l = lab_sel[sel]
+                lsum[:] += np.bincount(l, weights=w[sel], minlength=n + 1)
+                lcnt[:] += np.bincount(l, minlength=n + 1)
         tgt = ns_cells if vertical else ew_cells
         tgt[:] += np.bincount(lab_sel, minlength=n + 1)
 
@@ -345,21 +360,22 @@ def edge_lengths(labels, code, n, dy_by_row, dx_by_gridline, na_background=False
         if L.size:
             diff = L != R
             wy = np.broadcast_to(dy[r0:r1, None], L.shape)
-            vR = _is_valid(code[r0:r1, 1:])
+            kR = _nb_kind(code[r0:r1, 1:])
             s = diff & (L > 0)
-            _accum(L[s], vR[s], wy[s], True)
-            vL = _is_valid(code[r0:r1, :-1])
+            _accum(L[s], kR[s], wy[s], True)
+            kL = _nb_kind(code[r0:r1, :-1])
             s = diff & (R > 0)
-            _accum(R[s], vL[s], wy[s], True)
+            _accum(R[s], kL[s], wy[s], True)
 
         # ---- vertical edges on the left and right grid borders ----
         # For a single-column raster this visits column 0 twice, which is
         # correct: such a cell is exposed on both its left and right side.
+        # Off-grid is "outside": the study area stops here.
         for col in (0, ncol - 1):
             lab = labels[r0:r1, col]
             s = lab > 0
             if s.any():
-                _accum(lab[s], np.zeros(int(s.sum()), dtype=bool), dy[r0:r1][s], True)
+                _accum(lab[s], np.zeros(int(s.sum()), dtype=np.uint8), dy[r0:r1][s], True)
 
         # ---- horizontal edges: up/down neighbours, pairs (j, j+1) ----
         j1 = min(r1, nrow - 1)
@@ -368,12 +384,12 @@ def edge_lengths(labels, code, n, dy_by_row, dx_by_gridline, na_background=False
             D = labels[r0 + 1:j1 + 1]
             diff = U != D
             wx = np.broadcast_to(dx[r0 + 1:j1 + 1, None], U.shape)
-            vD = _is_valid(code[r0 + 1:j1 + 1])
+            kD = _nb_kind(code[r0 + 1:j1 + 1])
             s = diff & (U > 0)
-            _accum(U[s], vD[s], wx[s], False)
-            vU = _is_valid(code[r0:j1])
+            _accum(U[s], kD[s], wx[s], False)
+            kU = _nb_kind(code[r0:j1])
             s = diff & (D > 0)
-            _accum(D[s], vU[s], wx[s], False)
+            _accum(D[s], kU[s], wx[s], False)
 
     # ---- horizontal edges on the top and bottom grid borders ----
     # As above, a single-row raster visits row 0 twice, once per border.
@@ -382,15 +398,17 @@ def edge_lengths(labels, code, n, dy_by_row, dx_by_gridline, na_background=False
         s = lab > 0
         if s.any():
             k = int(s.sum())
-            _accum(lab[s], np.zeros(k, dtype=bool), np.full(k, dx[gl]), False)
+            _accum(lab[s], np.zeros(k, dtype=np.uint8), np.full(k, dx[gl]), False)
 
     return {
         "edge_valid_len": valid_len,
-        "edge_domain_len": domain_len,
+        "edge_missing_len": missing_len,
+        "edge_outside_len": outside_len,
         "edge_ns_cells": ns_cells,
         "edge_ew_cells": ew_cells,
         "edge_valid_cells": valid_cells,
-        "edge_domain_cells": domain_cells,
+        "edge_missing_cells": missing_cells,
+        "edge_outside_cells": outside_cells,
     }
 
 

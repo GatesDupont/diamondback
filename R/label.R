@@ -195,6 +195,8 @@ label_patches <- function(x,
   n_total <- lab_info$n_total
   patch_class <- lab_info$patch_class
 
+  db_check_label_range(n_total)
+
   if (!quiet) {
     cli::cli_alert_success(
       "Found {.val {format(n_total, big.mark = ',')}} \\
@@ -398,11 +400,33 @@ db_labels_to_rast <- function(py, labels, code, template, output, overwrite,
   if (!quiet) cli::cli_alert_info("Writing labelled raster to {.path {output}} ...")
   dir.create(dirname(output), showWarnings = FALSE, recursive = TRUE)
 
-  # Track what we create so cleanup can be surgical; terra::tmpFiles(remove=TRUE)
-  # is never called because it would invalidate the user's live SpatRasters.
-  db_register_file(output)
+  # Write to a sibling temporary file and rename on success, so that a failure
+  # part-way through leaves no half-written raster at the user's path -- and, if
+  # they were overwriting, leaves the previous file intact rather than truncated.
+  # The rename is atomic on the same filesystem, which is why it is a sibling
+  # rather than something under tempdir().
+  # The marker goes *before* the extension: GDAL infers its driver from the
+  # extension, so "labels.tif.part" is a file it cannot write.
+  ext <- tools::file_ext(output)
+  tmp <- if (nzchar(ext)) {
+    paste0(tools::file_path_sans_ext(output), ".diamondback-part.", ext)
+  } else {
+    paste0(output, ".diamondback-part")
+  }
+  db_register_file(tmp, kind = "temp")
+  unlink(tmp)
 
-  terra::writeStart(out_r, filename = output, overwrite = overwrite,
+  ok <- FALSE
+  on.exit({
+    if (!ok) {
+      unlink(tmp)
+      if (!quiet) {
+        cli::cli_alert_info("Cleaned up the partial write; {.path {output}} was not modified.")
+      }
+    }
+  }, add = TRUE)
+
+  terra::writeStart(out_r, filename = tmp, overwrite = TRUE,
                     datatype = "INT4S", NAflag = -2147483648)
   pb <- db_progress("Writing raster", length(blocks), quiet = quiet)
   for (i in seq_along(blocks)) {
@@ -417,6 +441,21 @@ db_labels_to_rast <- function(py, labels, code, template, output, overwrite,
   }
   terra::writeStop(out_r)
   db_progress_done(pb)
+
+  if (!file.rename(tmp, output)) {
+    # Cross-device or a locked target: fall back to a copy, then drop the part.
+    if (!file.copy(tmp, output, overwrite = TRUE)) {
+      cli::cli_abort(c(
+        "Could not move the finished raster into place.",
+        "x" = "From {.path {tmp}} to {.path {output}}.",
+        "i" = "The completed raster is still at the temporary path."
+      ), call = NULL)
+    }
+    unlink(tmp)
+  }
+  ok <- TRUE
+  .db_files$created <- .db_files$created[.db_files$created != tmp]
+  db_register_file(output, kind = "output")
 
   list(obj = NULL, path = output)
 }
@@ -447,6 +486,30 @@ db_crop_to_mask <- function(r, mask_r, quiet = FALSE) {
     )
   }
   list(x = r2, mask = m2)
+}
+
+# The largest patch ID that can survive the whole round trip. INT_MIN is R's
+# NA_integer_ and is used as the raster's no-data value, so the usable range
+# stops at INT_MAX. This is the binding constraint, not SciPy's: scipy can label
+# into int64, but an R integer vector, a GeoTIFF INT4S band and terra's NA all
+# top out here. Rather than let a 2-billion-patch raster overflow into garbage
+# or silent NAs, stop and say so.
+MAX_PATCH_ID <- .Machine$integer.max   # 2147483647
+
+#' Refuse to produce patch IDs that cannot be represented
+#' @noRd
+db_check_label_range <- function(n_total) {
+  if (n_total <= MAX_PATCH_ID) return(invisible(TRUE))
+  cli::cli_abort(c(
+    "Found {format(n_total, big.mark = ',')} patches, which is more than can be \\
+     represented in a labelled raster.",
+    "x" = "The limit is {format(MAX_PATCH_ID, big.mark = ',')}: patch IDs travel \\
+           through R integers and a 32-bit GeoTIFF band, and the value below that \\
+           is reserved for {.val NA}.",
+    "i" = "A raster this fragmented is usually a sign of noise; try smoothing, \\
+           a minimum-mapping-unit filter, or 8-neighbour connectivity.",
+    "i" = "Otherwise, split the raster into tiles and label them separately."
+  ), class = "diamondback_overflow_error", call = NULL)
 }
 
 db_check_output <- function(output, overwrite) {

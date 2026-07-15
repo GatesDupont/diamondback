@@ -1,4 +1,16 @@
 # Workflow derived from https://github.com/r-lib/actions/tree/v2/examples
+#
+# Python is provisioned HERE, not from inside the R tests. The separation is
+# deliberate:
+#   * the log shows exactly what was installed, and at which versions;
+#   * NumPy and SciPy are pinned and inspectable;
+#   * a dependency-install failure is a distinct red step from a test failure;
+#   * the tests have no hidden environmental side effects;
+#   * nobody copies a test config that quietly authorises provisioning.
+#
+# The tests are then told which interpreter to use via RETICULATE_PYTHON, and
+# assume the backend already exists. diamondback's own managed-environment path
+# (diamondback_install_python) is exercised separately, in managed-python.yaml.
 on:
   push:
     branches: [main, master]
@@ -11,28 +23,46 @@ jobs:
   R-CMD-check:
     runs-on: ${{ matrix.config.os }}
 
-    name: ${{ matrix.config.os }} (${{ matrix.config.r }})
+    name: ${{ matrix.config.os }} (R ${{ matrix.config.r }}, Python ${{ matrix.config.python }})
 
     strategy:
       fail-fast: false
       matrix:
         config:
-          - {os: macos-latest,   r: 'release'}
-          - {os: windows-latest, r: 'release'}
-          - {os: ubuntu-latest,  r: 'devel', http-user-agent: 'release'}
-          - {os: ubuntu-latest,  r: 'release'}
-          - {os: ubuntu-latest,  r: 'oldrel-1'}
+          - {os: macos-latest,   r: 'release', python: '3.12'}
+          - {os: windows-latest, r: 'release', python: '3.12'}
+          - {os: ubuntu-latest,  r: 'devel',   python: '3.12', http-user-agent: 'release'}
+          - {os: ubuntu-latest,  r: 'release', python: '3.12'}
+          - {os: ubuntu-latest,  r: 'oldrel-1', python: '3.10'}
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       R_KEEP_PKG_SOURCE: yes
-      # reticulate resolves NumPy and SciPy through uv on first use; keep it
-      # non-interactive on CI.
-      RETICULATE_PYTHON_INITIALIZED: ""
 
     steps:
       - uses: actions/checkout@v4
 
+      # ---- Python backend: provisioned explicitly, before any R runs ----
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.config.python }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=2.0" "scipy>=1.13"
+
+      - name: Report the Python backend
+        run: |
+          python -c "import sys, numpy, scipy; print('python', sys.version)"
+          python -c "import numpy, scipy; print('numpy', numpy.__version__, '| scipy', scipy.__version__)"
+          python -c "import sys; print('interpreter:', sys.executable)"
+
+      - name: Point reticulate at that interpreter
+        shell: bash
+        run: echo "RETICULATE_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
+      # ---- R ----
       - uses: r-lib/actions/setup-pandoc@v2
 
       - uses: r-lib/actions/setup-r@v2
@@ -46,7 +76,17 @@ jobs:
           extra-packages: any::rcmdcheck
           needs: check
 
+      # A green check here would be meaningless if the tests had quietly skipped
+      # for want of a backend, so fail loudly instead.
+      - name: Verify diamondback sees the provisioned backend
+        run: |
+          Rscript -e 'chk <- diamondback::diamondback_check(); if (!isTRUE(chk$ok)) stop("backend not usable: ", chk$error)'
+        env:
+          RETICULATE_PYTHON: ${{ env.RETICULATE_PYTHON }}
+
       - uses: r-lib/actions/check-r-package@v2
         with:
           upload-snapshots: true
           build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
+        env:
+          RETICULATE_PYTHON: ${{ env.RETICULATE_PYTHON }}

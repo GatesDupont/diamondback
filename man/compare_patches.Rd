@@ -105,14 +105,33 @@ as well as the counts, so a rule based on proportion rather than absolute
 overlap is a one-line re-derivation.
 }
 
-\section{Thresholds}{
+\section{Thresholds, and seeing what they did}{
 
 Defaults keep every overlap, because discarding evidence should be a decision
 you make rather than one made for you. But classification is acutely sensitive
-to slivers: a patch donating a single cell to a neighbour registers as a split
-under \code{min_overlap_cells = 1}. If your rasters are noisy, raise
-\code{min_overlap_prop} to something like \code{0.01}. The number of links the
-thresholds dropped is reported.
+to slivers: a patch that donates 99.9\% of itself to one descendant and a
+single cell to another is called a \code{split} under \code{min_overlap_cells = 1},
+which is arguably not a meaningful description of what happened.
+
+So nothing is hidden. Thresholded links are \strong{flagged, not deleted}:
+\verb{$overlaps} keeps every overlapping pair with a \code{passes_threshold} column.
+And every patch is classified \strong{twice} --- \code{event} uses only links that
+passed, \code{event_all_overlaps} uses all of them, and
+\code{threshold_changed_event} marks the patches where the two disagree.
+\code{metadata$n_events_changed_by_threshold} counts them, and both thresholds are
+stored in \code{metadata}.
+
+The point is that two analyses of the same rasters cannot disagree without the
+cause being visible in the output. If \code{threshold_changed_event} is all
+\code{FALSE}, your thresholds did not matter and the classification is robust. If
+it is not, those are exactly the patches to look at.
+
+\strong{Which knob suppresses a sliver.} A link passes \code{min_overlap_prop} if it is
+a big enough share of \strong{either} side, so that a small patch absorbed whole
+into a large one is not discarded. The consequence is worth knowing: a
+one-cell descendant is 100\% of \emph{itself}, so \code{min_overlap_prop} can never
+suppress it, however large you set it. Use \code{min_overlap_cells} for absolute
+slivers, and \code{min_overlap_prop} for links that are trivial to both sides.
 }
 
 \examples{

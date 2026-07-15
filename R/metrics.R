@@ -23,17 +23,34 @@
 #' up/down neighbour runs east--west and is `xres` long. The counts of each are
 #' reported separately (`edge_ns_cells`, `edge_ew_cells`) as exact integers.
 #'
-#' @section Habitat edge versus domain edge:
-#' `perimeter = edge_valid + edge_domain`, and the split matters:
+#' @section What is on the other side of the boundary:
+#' `perimeter = edge_valid + edge_missing + edge_outside`. The three components
+#' mirror the cell states, and they mean genuinely different things:
 #'
-#' * `edge_valid` --- boundary against an in-domain, known cell. The patch
-#'   genuinely stops here. This is real habitat edge.
-#' * `edge_domain` --- boundary against a masked-out cell, a missing cell, or the
-#'   grid border. The patch may well continue; we cannot see it.
+#' * `edge_valid` --- boundary against an in-domain, known cell (background, or
+#'   another class). **Real habitat edge**: the patch genuinely stops here.
+#' * `edge_missing` --- boundary against a cell inside the study area whose value
+#'   is unknown (`NA` in the source). The patch may continue into it; nobody
+#'   looked. An unsurveyed hole in the middle of a patch lands here.
+#' * `edge_outside` --- boundary against a cell excluded by `mask`, or the grid
+#'   border. **An artefact of where you drew the study area.**
 #'
-#' `touches_domain_edge` flags patches with any `edge_domain`. **Their `cells`,
-#' `area_*` and `perimeter` are lower bounds**, and they are usually the patches
-#' you want to exclude from a size distribution.
+#' Keeping the last two apart matters. A patch beside an unsurveyed gap and a
+#' patch cut off by the study-area boundary are not the same situation, and a
+#' single "domain edge" number would say they were. `edge_domain` is still
+#' provided as their sum for callers that genuinely do not care.
+#'
+#' Two flags follow:
+#'
+#' * `touches_domain_edge` (`edge_outside > 0`) --- the patch is truncated by the
+#'   study area, so its `cells`, `area_*` and `perimeter` are **lower bounds**.
+#'   These are usually the patches to exclude from a size distribution.
+#' * `touches_missing` (`edge_missing > 0`) --- the patch abuts unknown data and
+#'   may be larger than measured, for a different reason.
+#'
+#' With `na = "background"` you have declared `NA` to mean genuine absence, so
+#' missing cells become real habitat edge: `edge_missing` is then always zero and
+#' those boundaries appear in `edge_valid`.
 #'
 #' @section Geographic rasters:
 #' Lon/lat grids are supported exactly, not approximated as planar. Cell area
@@ -58,10 +75,14 @@
 #'   * `patch_id`, `class` (multi-class runs only), `cells`
 #'   * `area_m2`, `area_ha`, `area_km2` --- area in map units
 #'   * `perimeter` --- total exposed boundary
-#'   * `edge_valid`, `edge_domain` --- perimeter split by what is on the far side
+#'   * `edge_valid`, `edge_missing`, `edge_outside` --- perimeter split by what
+#'     is on the far side; these sum to `perimeter`
+#'   * `edge_domain` --- `edge_missing + edge_outside`, for convenience
 #'   * `edge_ns_cells`, `edge_ew_cells` --- exact edge counts, CRS-free
 #'   * `edge_area_ratio` --- `perimeter / area`
-#'   * `touches_domain_edge` --- whether metrics are a lower bound
+#'   * `touches_domain_edge` --- truncated by the study area, so metrics are a
+#'     lower bound
+#'   * `touches_missing` --- abuts cells whose value is unknown
 #'   * `xmin`, `xmax`, `ymin`, `ymax` --- bounding box in map coordinates
 #'   * `x_centroid`, `y_centroid` --- mean cell centre, which for a concave or
 #'     multi-lobed patch may fall outside the patch
@@ -118,7 +139,8 @@ patch_metrics <- function(x,
   )
 
   edge_valid <- py_num(edges, "edge_valid_len")[-1]
-  edge_domain <- py_num(edges, "edge_domain_len")[-1]
+  edge_missing <- py_num(edges, "edge_missing_len")[-1]
+  edge_outside <- py_num(edges, "edge_outside_len")[-1]
   edge_ns <- py_num(edges, "edge_ns_cells")[-1]
   edge_ew <- py_num(edges, "edge_ew_cells")[-1]
 
@@ -134,12 +156,10 @@ patch_metrics <- function(x,
   # for a bare matrix with no CRS; anything else needs real map units.
   if (identical(units, "cells")) {
     out$area_cells <- cells
-    out$perimeter_cells <- edge_ns + edge_ew
-    out$edge_valid_cells <- py_num(edges, "edge_valid_cells")[-1]
-    out$edge_domain_cells <- py_num(edges, "edge_domain_cells")[-1]
-    out$perimeter <- out$perimeter_cells
-    out$edge_valid <- out$edge_valid_cells
-    out$edge_domain <- out$edge_domain_cells
+    out$edge_valid <- py_num(edges, "edge_valid_cells")[-1]
+    out$edge_missing <- py_num(edges, "edge_missing_cells")[-1]
+    out$edge_outside <- py_num(edges, "edge_outside_cells")[-1]
+    out$perimeter <- out$edge_valid + out$edge_missing + out$edge_outside
   } else {
     scale_len <- if (lonlat || identical(units, "m")) 1 else 1e-3
     scale_area <- if (lonlat || identical(units, "m")) 1 else 1e-6
@@ -150,17 +170,27 @@ patch_metrics <- function(x,
     if (identical(units, "km")) {
       out$area <- area_m2 * scale_area
     }
-    out$perimeter <- (edge_valid + edge_domain) * scale_len
+    out$perimeter <- (edge_valid + edge_missing + edge_outside) * scale_len
     out$edge_valid <- edge_valid * scale_len
-    out$edge_domain <- edge_domain * scale_len
+    out$edge_missing <- edge_missing * scale_len
+    out$edge_outside <- edge_outside * scale_len
   }
+
+  # edge_domain keeps the two non-habitat kinds together for callers that do
+  # not care which, but the components are what you should reach for: an
+  # unsurveyed hole inside the study area and the edge of the study area are
+  # different facts about a patch.
+  out$edge_domain <- out$edge_missing + out$edge_outside
 
   out$edge_ns_cells <- edge_ns
   out$edge_ew_cells <- edge_ew
   out$edge_area_ratio <- out$perimeter / ifelse(out$cells > 0,
                                                 if (identical(units, "cells")) out$area_cells else out$area_m2,
                                                 NA_real_)
-  out$touches_domain_edge <- edge_domain > 0
+  # Truncated by the study area: the patch probably continues out of view.
+  out$touches_domain_edge <- out$edge_outside > 0
+  # Adjacent to cells nobody looked at: the patch may extend into them.
+  out$touches_missing <- out$edge_missing > 0
 
   if (isTRUE(bbox)) {
     if (!quiet) cli::cli_alert_info("Computing bounding boxes ...")
@@ -201,13 +231,15 @@ db_empty_metrics <- function(units, core, bbox, centroid, multiclass) {
   base <- data.frame(patch_id = integer(), cells = numeric())
   if (multiclass) base$class <- numeric()
   cols <- if (identical(units, "cells")) {
-    c("area_cells", "perimeter", "edge_valid", "edge_domain")
+    c("area_cells", "perimeter")
   } else {
-    c("area_m2", "area_ha", "area_km2", "perimeter", "edge_valid", "edge_domain")
+    c("area_m2", "area_ha", "area_km2", "perimeter")
   }
-  cols <- c(cols, "edge_ns_cells", "edge_ew_cells", "edge_area_ratio")
+  cols <- c(cols, "edge_valid", "edge_missing", "edge_outside", "edge_domain",
+            "edge_ns_cells", "edge_ew_cells", "edge_area_ratio")
   for (cn in cols) base[[cn]] <- numeric()
   base$touches_domain_edge <- logical()
+  base$touches_missing <- logical()
   if (bbox) for (cn in c("xmin", "xmax", "ymin", "ymax")) base[[cn]] <- numeric()
   if (centroid) for (cn in c("x_centroid", "y_centroid")) base[[cn]] <- numeric()
   if (core) for (cn in c("core_cells", "core_fraction")) base[[cn]] <- numeric()

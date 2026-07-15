@@ -117,6 +117,13 @@ change$events     # one row per patch: split / merger / persistence / ...
 change$lineages   # one row per connected group of related patches
 ```
 
+Event labels are threshold-sensitive — a patch donating one incidental cell to a
+neighbour reads as a `split`. So nothing is hidden: thresholded links are
+**flagged, not deleted** (`$overlaps$passes_threshold`), every patch is
+classified both ways (`event` vs `event_all_overlaps`), and
+`threshold_changed_event` marks where those disagree. If it's all `FALSE`, your
+thresholds didn't matter.
+
 Re-running `analyze_patches()` with the same inputs reads the cached result
 instead of relabelling. Change the class, the mask, the connectivity or the
 source file, and it recomputes and tells you which one changed.
@@ -175,17 +182,25 @@ never merges them silently:
 `result$metadata$cells`, and `patch_domain()` returns them as a categorical
 raster.
 
-## Edges: habitat versus study area
+## Edges: habitat, unknown, and study area
 
-`perimeter` splits into two parts that always sum back to it:
+`perimeter` splits into three parts that always sum back to it:
 
 - `edge_valid` — boundary against a real, in-domain cell. The patch genuinely
-  stops here.
-- `edge_domain` — boundary against a masked cell, a missing cell, or the grid
-  border. The patch may well continue; you just cannot see it.
+  stops here. This is habitat edge.
+- `edge_missing` — boundary against a cell inside the study area whose value is
+  unknown. An unsurveyed hole in a patch lands here.
+- `edge_outside` — boundary against a masked cell or the grid border. An
+  artefact of where you drew the study area.
 
-`touches_domain_edge` flags patches whose area and perimeter are therefore
-**lower bounds** — usually the ones to drop from a size distribution.
+The last two are kept apart on purpose: a patch beside an unsurveyed gap and a
+patch cut off by the study boundary are different situations, and one "domain
+edge" number would say they were the same. (`edge_domain` is still their sum, if
+you don't care.)
+
+`touches_domain_edge` flags patches truncated by the study area, whose area and
+perimeter are therefore **lower bounds** — usually the ones to drop from a size
+distribution. `touches_missing` flags those abutting unknown data.
 
 Perimeter counts shared cell edges only. Corner contact contributes nothing,
 because two cells touching at a corner share no physical boundary. Non-square

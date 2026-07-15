@@ -36,10 +36,14 @@ row per patch and these columns:
 \item \code{patch_id}, \code{class} (multi-class runs only), \code{cells}
 \item \code{area_m2}, \code{area_ha}, \code{area_km2} --- area in map units
 \item \code{perimeter} --- total exposed boundary
-\item \code{edge_valid}, \code{edge_domain} --- perimeter split by what is on the far side
+\item \code{edge_valid}, \code{edge_missing}, \code{edge_outside} --- perimeter split by what
+is on the far side; these sum to \code{perimeter}
+\item \code{edge_domain} --- \code{edge_missing + edge_outside}, for convenience
 \item \code{edge_ns_cells}, \code{edge_ew_cells} --- exact edge counts, CRS-free
 \item \code{edge_area_ratio} --- \code{perimeter / area}
-\item \code{touches_domain_edge} --- whether metrics are a lower bound
+\item \code{touches_domain_edge} --- truncated by the study area, so metrics are a
+lower bound
+\item \code{touches_missing} --- abuts cells whose value is unknown
 \item \code{xmin}, \code{xmax}, \code{ymin}, \code{ymax} --- bounding box in map coordinates
 \item \code{x_centroid}, \code{y_centroid} --- mean cell centre, which for a concave or
 multi-lobed patch may fall outside the patch
@@ -67,19 +71,37 @@ up/down neighbour runs east--west and is \code{xres} long. The counts of each ar
 reported separately (\code{edge_ns_cells}, \code{edge_ew_cells}) as exact integers.
 }
 
-\section{Habitat edge versus domain edge}{
+\section{What is on the other side of the boundary}{
 
-\code{perimeter = edge_valid + edge_domain}, and the split matters:
+\code{perimeter = edge_valid + edge_missing + edge_outside}. The three components
+mirror the cell states, and they mean genuinely different things:
 \itemize{
-\item \code{edge_valid} --- boundary against an in-domain, known cell. The patch
-genuinely stops here. This is real habitat edge.
-\item \code{edge_domain} --- boundary against a masked-out cell, a missing cell, or the
-grid border. The patch may well continue; we cannot see it.
+\item \code{edge_valid} --- boundary against an in-domain, known cell (background, or
+another class). \strong{Real habitat edge}: the patch genuinely stops here.
+\item \code{edge_missing} --- boundary against a cell inside the study area whose value
+is unknown (\code{NA} in the source). The patch may continue into it; nobody
+looked. An unsurveyed hole in the middle of a patch lands here.
+\item \code{edge_outside} --- boundary against a cell excluded by \code{mask}, or the grid
+border. \strong{An artefact of where you drew the study area.}
 }
 
-\code{touches_domain_edge} flags patches with any \code{edge_domain}. \strong{Their \code{cells},
-\verb{area_*} and \code{perimeter} are lower bounds}, and they are usually the patches
-you want to exclude from a size distribution.
+Keeping the last two apart matters. A patch beside an unsurveyed gap and a
+patch cut off by the study-area boundary are not the same situation, and a
+single "domain edge" number would say they were. \code{edge_domain} is still
+provided as their sum for callers that genuinely do not care.
+
+Two flags follow:
+\itemize{
+\item \code{touches_domain_edge} (\code{edge_outside > 0}) --- the patch is truncated by the
+study area, so its \code{cells}, \verb{area_*} and \code{perimeter} are \strong{lower bounds}.
+These are usually the patches to exclude from a size distribution.
+\item \code{touches_missing} (\code{edge_missing > 0}) --- the patch abuts unknown data and
+may be larger than measured, for a different reason.
+}
+
+With \code{na = "background"} you have declared \code{NA} to mean genuine absence, so
+missing cells become real habitat edge: \code{edge_missing} is then always zero and
+those boundaries appear in \code{edge_valid}.
 }
 
 \section{Geographic rasters}{

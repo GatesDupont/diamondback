@@ -90,9 +90,14 @@ db_cache_match <- function(cached_meta, request_meta) {
     path
   }
 
-  # An unfingerprintable source (a large in-memory raster) can never match: we
-  # have no way to know it did not change. Better a slow rerun than a wrong one.
+  # An unfingerprintable source can never match: with no path, size, mtime or
+  # hash there is nothing to compare, so a "hit" would be a guess. Better a slow
+  # rerun than a wrong answer. This covers a large in-memory raster under
+  # "auto", and any in-memory raster under "fast".
   if (identical(a$source$type, "memory") && identical(a$source$hash, "<na>")) {
+    return("source (in-memory raster, cannot be fingerprinted)")
+  }
+  if (identical(b$source$type, "memory") && identical(b$source$hash, "<na>")) {
     return("source (in-memory raster, cannot be fingerprinted)")
   }
 

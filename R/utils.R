@@ -85,9 +85,17 @@ db_source_info <- function(x, fingerprint = c("auto", "full", "fast"),
     if (length(srcs) == 1L && file.exists(srcs)) {
       return(db_source_info(srcs, fingerprint, hash_max_mb))
     }
-    # An in-memory raster is hashed by value when that is cheap; "full" forces
-    # it regardless of size.
-    lim <- if (identical(fingerprint, "full")) Inf else 1e6
+    # An in-memory raster has no path, size or mtime to fall back on, so the
+    # only identity available is a hash of its values. That makes the modes
+    # mean something slightly different here than for a file:
+    #   full  - always hash, however large
+    #   auto  - hash while it is cheap (<= 1e6 cells), otherwise no identity
+    #   fast  - never hash, so no identity at all
+    # "No identity" means caching is declined rather than guessed at; see
+    # db_cache_match(). This is the safe direction: terra drops a raster's file
+    # source as soon as it is modified in memory, so anything reaching here is
+    # data we have never seen written down.
+    lim <- switch(fingerprint, full = Inf, auto = 1e6, fast = -1)
     if (terra::ncell(x) <= lim) {
       return(list(
         type = "memory",

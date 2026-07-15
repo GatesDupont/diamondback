@@ -467,6 +467,96 @@ patch_core_area(gl, depth = 1000, quiet = TRUE)
 
 Project to an equal-area CRS first.
 
+## How much faster, and when
+
+The reason this package exists is that `terra::patches()` slows down sharply as
+a raster gets bigger and more fragmented. It is worth seeing the shape of that
+rather than taking a number on trust, so here is a small live benchmark. It is
+kept deliberately modest so the vignette builds in seconds — the largest raster
+here is 640,000 cells, which is tiny by the standards this package is aimed at.
+
+```{r bench, fig.width = 7, fig.height = 4.2, fig.alt = "Run time against raster size for diamondback and terra::patches, on a log-log scale. terra's curve rises much more steeply."}
+make_landscape <- function(side, seed = 1) {
+  r <- rast(nrows = side, ncols = side, xmin = 0, xmax = side * 30,
+            ymin = 0, ymax = side * 30, crs = "EPSG:5070")
+  set.seed(seed)
+  values(r) <- rbinom(ncell(r), 1, 0.4)
+  # Smoothing gives patch structure like real land cover rather than
+  # salt-and-pepper noise, which is what makes patch counts realistic.
+  ifel(focal(r, 3, "mean", na.rm = TRUE) > 0.45, 1, 0)
+}
+
+# Warm the Python backend up first. Starting the interpreter costs a second or
+# so, once per session, and folding that into the first data point would say
+# something about reticulate rather than about labelling.
+invisible(label_patches(matrix(c(1, 0, 0, 1), 2, 2), quiet = TRUE))
+
+sides <- c(100, 200, 400, 800)
+bench <- do.call(rbind, lapply(sides, function(side) {
+  r <- make_landscape(side)
+
+  t_db <- system.time(db <- label_patches(r, directions = 8, quiet = TRUE))[["elapsed"]]
+
+  rt <- r
+  rt[rt == 0] <- NA          # terra wants NA background
+  t_tr <- system.time(tr <- patches(rt, directions = 8, zeroAsNA = FALSE))[["elapsed"]]
+
+  data.frame(
+    cells = ncell(r),
+    patches = db$metadata$n_patches,
+    diamondback = t_db,
+    terra = t_tr,
+    # A speed claim is worthless if the answers differ, so check every point.
+    agree = db$metadata$n_patches ==
+      length(unique(na.omit(values(tr, mat = FALSE))))
+  )
+}))
+
+bench
+```
+
+```{r bench-plot, echo = FALSE, fig.width = 7, fig.height = 4.2}
+op <- par(mar = c(4.5, 4.5, 2, 1))
+plot(bench$cells, bench$terra, log = "xy", type = "b", pch = 19, col = "#c0392b",
+     xlab = "cells in raster", ylab = "seconds (log scale)",
+     main = "Connected-component labelling", ylim = range(bench$terra, bench$diamondback))
+lines(bench$cells, bench$diamondback, type = "b", pch = 19, col = "#2471a3")
+legend("topleft", c("terra::patches()", "diamondback"), col = c("#c0392b", "#2471a3"),
+       lwd = 2, pch = 19, bty = "n")
+par(op)
+```
+
+Both axes are logarithmic, so a straight line is a power law and a steeper line
+is worse scaling. The gap widens with size, which is the whole point:
+
+```{r bench-speedup}
+data.frame(cells = bench$cells, patches = bench$patches,
+           speedup = round(bench$terra / bench$diamondback, 1),
+           agree = bench$agree)
+```
+
+Three honest caveats.
+
+**At small sizes `terra` wins.** At the left-hand end of that plot the speedup is
+below 1: `terra::patches()` is faster on a small raster and has no Python
+dependency, so there is no reason to reach for diamondback there. This package is
+for the right-hand end.
+
+**Python starts up once.** The first diamondback call in a session pays a second
+or so to start the interpreter, which the warm-up above moves out of the
+measurements. It is real, but it is paid once per session, not per raster — and
+it is irrelevant next to a labelling job measured in minutes.
+
+**These rasters are small.** The largest here is 640,000 cells, and the
+divergence keeps going well past what a vignette can afford to build. On the
+author's machine `terra::patches()` did not finish a 4-million-cell raster within
+20 minutes, where diamondback labelled it in about a second.
+`inst/benchmarks/benchmark-terra.R` runs the larger sizes on your own hardware.
+
+The mechanism is not that SciPy is a faster language. It is that
+`terra::patches()` degrades superlinearly as the *patch count* grows, and
+diamondback stays roughly linear in cells.
+
 ## Where to go next
 
 - `?label_patches` — the full account of cell states and `NA` handling

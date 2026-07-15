@@ -109,19 +109,29 @@ runs east–west and has length `xres`. Getting this backwards is a classic bug,
 the two are accumulated in separate columns (`edge_ns_cells`, `edge_ew_cells`)
 that are exact integers and independent of CRS.
 
-**5. Domain edge vs habitat edge?** Split into two reported components that sum to
-`perimeter`:
+**5. Domain edge vs habitat edge?** Split into **three** components that sum to
+`perimeter`, mirroring the cell states:
 
-- `edge_valid` — boundary against an in-domain, non-missing cell. This is real
-  habitat edge: the patch genuinely stops here.
-- `edge_domain` — boundary against an outside-domain cell, a missing cell, or the
-  grid border. This is an artefact of the study area, not ecology. The patch may
-  well continue; we just cannot see it.
+- `edge_valid` — boundary against an in-domain, known cell. Real habitat edge:
+  the patch genuinely stops here.
+- `edge_missing` — boundary against a cell inside the study area whose value is
+  unknown. The patch may continue into it; nobody looked.
+- `edge_outside` — boundary against a masked-out cell or the grid border. An
+  artefact of where the study area was drawn.
 
-`touches_domain_edge` is `edge_domain > 0`. Any patch with this flag has area and
-edge metrics that are **lower bounds**. This is the flag that lets a user drop
-boundary-truncated patches from an analysis rather than silently treating a
-clipped patch as a small one.
+Two components was the original design and it was wrong. It lumped "an
+unsurveyed hole in the middle of this patch" together with "the study area ends
+here", which are different facts: the first is a data gap you might fill, the
+second is a boundary you chose. A patch beside unsurveyed cells should not be
+interpreted like a patch against the legal study boundary, and a single
+`edge_domain` number forced exactly that. `edge_domain` survives as their sum,
+for callers that genuinely do not care.
+
+`touches_domain_edge` is `edge_outside > 0`: the patch is truncated by the study
+area, so its area and edge metrics are **lower bounds**. `touches_missing` is
+`edge_missing > 0`: the patch abuts unknown data, and may be larger for a
+different reason. Under `na = "background"` the caller has declared NA to mean
+absence, so `edge_missing` is always zero and those boundaries are habitat edge.
 
 **6. How is a mother patch chosen after a split?** The primary predecessor of a
 time-2 patch is the time-1 patch contributing the **largest overlap cell count**.
@@ -145,9 +155,29 @@ honest unit.
 **8. Thresholds on trivial overlaps?** Defaults keep everything
 (`min_overlap_cells = 1`, `min_overlap_prop = 0`) because suppression is a
 scientific choice and a silent default would be a trap. But event classification
-is *acutely* sensitive to slivers — a patch donating one cell to a neighbour would
-otherwise register as a split — so both thresholds are exposed and documented, and
-`compare_patches()` reports how many links the thresholds dropped.
+is *acutely* sensitive to slivers: a patch that gives 99.9% of itself to one
+descendant and a single cell to another is called a `split`, which is arguably
+not a description of what happened.
+
+The thresholds alone are not enough, because two analyses of the same rasters
+could then disagree with no visible cause. So:
+
+- thresholded links are **flagged, not deleted** (`passes_threshold`), keeping
+  `$overlaps` the complete evidence it claims to be;
+- every patch is classified **twice** — `event` from passing links,
+  `event_all_overlaps` from all of them — and `threshold_changed_event` marks
+  where they differ;
+- `metadata` stores both thresholds and `n_events_changed_by_threshold`.
+
+If `threshold_changed_event` is all `FALSE`, the thresholds did not matter and
+the classification is robust to them. That is a question a user should be able to
+answer from the output, not by re-running.
+
+One asymmetry is worth knowing: a link passes `min_overlap_prop` if it is a large
+enough share of *either* side, so a small patch absorbed whole into a large one
+is not discarded. The consequence is that a one-cell descendant is 100% of
+itself and `min_overlap_prop` can never suppress it. `min_overlap_cells` is the
+knob for absolute slivers.
 
 **9. Geographic (lon/lat) rasters?** Supported, exactly, without pretending
 planar geometry. For a lon/lat grid, cell area and east–west extent vary with
@@ -304,7 +334,15 @@ What is done anyway to make that ceiling as high as possible:
 - **Chunked reductions.** Metrics, edges and overlaps run in row chunks, so no
   step allocates a full-array float temporary.
 - **dtype selection.** Labels are `int32` unless the cell count could overflow it,
-  in which case `int64`.
+  in which case `int64`. The code array is `uint8`, or `uint16` past 253 classes.
+
+**Where patch IDs actually top out.** Not at SciPy: `ndimage.label()` will happily
+produce `int64`. The binding constraint is everything downstream — an R integer
+vector, a GeoTIFF `INT4S` band, and `INT_MIN` being spoken for as the no-data
+value. So the ceiling is `.Machine$integer.max` (2,147,483,647), and
+`db_check_label_range()` stops there with an explanation rather than letting IDs
+wrap into garbage or silently become NA. Verified: terra round-trips `1`,
+`2147483647` and `NA` through `INT4S` exactly.
 
 What was considered and rejected for v1: Dask and tiled union-find labeling. Both
 are real answers to rasters that genuinely exceed RAM, and both are a large amount
@@ -312,6 +350,17 @@ of machinery to get right (cross-tile label merging is where these go wrong). Th
 in-memory path is correct and fast for the target case. The labeling kernel is
 isolated behind `label_array()` so a second backend can be added without touching
 the R API.
+
+**Failure is a supported path.** Output rasters are written to a sibling
+`.diamondback-part.<ext>` file and renamed into place on success (the marker goes
+before the extension because GDAL infers its driver from it). A failure part-way
+through therefore leaves no half-written raster at the user's path, and — the
+case that matters — a failed *overwrite* leaves the previous file byte-identical
+rather than truncated, which is what writing directly to the target would do the
+moment `writeStart()` ran. Every stage is fault-tested: ingestion, labelling,
+writing, and metrics are each made to fail on purpose, and the tests assert that
+no temp files accumulate, the reader is closed, the backend still works, and the
+user's files survive.
 
 Temp files: diamondback tracks every file it creates, **with its provenance**,
 and removes only its own temporaries. Ownership is recorded at creation, not

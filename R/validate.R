@@ -20,8 +20,7 @@
 #' * no foreground cell lies outside the mask;
 #' * no patch has zero cells;
 #' * patch IDs fit the integer type used;
-#' * `edge_valid + edge_domain` equals `perimeter`, and edge counts are
-#'   consistent with edge lengths;
+#' * `edge_valid + edge_missing + edge_outside` equals `perimeter`;
 #' * core area never exceeds total area.
 #'
 #' @param x A [patch_result].
@@ -112,8 +111,9 @@ validate_patch_result <- function(x, error = FALSE, quiet = FALSE) {
               format(tot, big.mark = ","), format(meta$geometry$ncell, big.mark = ",")))
 
   # --- metric internal consistency ---
-  if (all(c("perimeter", "edge_valid", "edge_domain") %in% names(met)) && nrow(met)) {
-    d <- abs(met$edge_valid + met$edge_domain - met$perimeter)
+  if (all(c("perimeter", "edge_valid", "edge_missing", "edge_outside") %in% names(met)) &&
+      nrow(met)) {
+    d <- abs(met$edge_valid + met$edge_missing + met$edge_outside - met$perimeter)
     tol <- 1e-6 * pmax(1, met$perimeter)
     add("edge components sum to perimeter",
         all(d <= tol),

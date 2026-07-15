@@ -173,10 +173,20 @@ test_that("min_overlap_cells suppresses trivial links and changes the event", {
   loose <- compare_patches(m1, m2, directions = 4, min_overlap_cells = 1, quiet = TRUE)
   strict <- compare_patches(m1, m2, directions = 4, min_overlap_cells = 2, quiet = TRUE)
 
+  # Both tables keep every overlapping pair: thresholds flag, they do not delete.
   expect_equal(nrow(loose$overlaps), 2L)
+  expect_equal(nrow(strict$overlaps), 2L)
   expect_equal(sort(loose$overlaps$overlap_cells), c(1, 4))
-  expect_equal(nrow(strict$overlaps), 1L)
+  expect_true(all(loose$overlaps$passes_threshold))
+  expect_equal(sum(strict$overlaps$passes_threshold), 1L)
   expect_equal(strict$metadata$n_links_dropped, 1L)
+  expect_equal(strict$metadata$n_links_all, 2L)
+  expect_equal(strict$metadata$n_links, 1L)
+
+  # And the effect of the threshold is visible per patch, not just in a count.
+  expect_true(all(strict$events$threshold_changed_event))
+  expect_true(all(strict$events$event_all_overlaps == "split"))
+  expect_gt(strict$metadata$n_events_changed_by_threshold, 0L)
 
   # This is the sensitivity the threshold exists for: one incidental cell is
   # the difference between "the patch split" and "the patch persisted".
@@ -197,13 +207,18 @@ test_that("min_overlap_prop keeps a link that matters to either side", {
   expect_equal(cmp$overlaps$prop_t2_inherited, 1)
 })
 
-test_that("thresholds report how many links they dropped", {
+test_that("thresholds report how many links they set aside", {
   skip_if_no_python()
   m1 <- matrix(0, 6, 6); m1[2:5, 2:5] <- 1
   m2 <- matrix(0, 6, 6); m2[5, 5] <- 1
   cmp <- compare_patches(m1, m2, min_overlap_prop = 1.5, quiet = TRUE)
   expect_equal(cmp$metadata$n_links_dropped, 1L)
-  expect_equal(nrow(cmp$overlaps), 0L)
+  expect_equal(cmp$metadata$n_links, 0L)
+  # The evidence is still there; only the flag says it was not used.
+  expect_equal(nrow(cmp$overlaps), 1L)
+  expect_false(cmp$overlaps$passes_threshold)
+  # A link that took no part in lineage gets no rank rather than a fictional one.
+  expect_true(is.na(cmp$overlaps$rank_from_t1))
 })
 
 # --- validation of inputs ---------------------------------------------------

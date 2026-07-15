@@ -36,8 +36,7 @@ pipeline. \code{label_patches(validate = TRUE)} wires it in automatically.
 \item no foreground cell lies outside the mask;
 \item no patch has zero cells;
 \item patch IDs fit the integer type used;
-\item \code{edge_valid + edge_domain} equals \code{perimeter}, and edge counts are
-consistent with edge lengths;
+\item \code{edge_valid + edge_missing + edge_outside} equals \code{perimeter};
 \item core area never exceeds total area.
 }
 }
