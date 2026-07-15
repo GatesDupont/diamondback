@@ -44,11 +44,23 @@ __all__ = [
     "foreground_outside_domain",
 ]
 
+# Labeling semantics. Changing this invalidates caches. See DESIGN.md section 5.
 ALGORITHM_VERSION = "1"
+
+# The R-facing surface of this module: function names, their signatures, and the
+# keys of the dicts they return. Bump it whenever any of those change, and bump
+# PY_INTERFACE_VERSION in R/python.R to match.
+#
+# This exists because the R code and this file are two halves of one program that
+# can drift apart -- most easily when a package is reinstalled while an R session
+# still holds the old namespace in memory. The R half then calls the new Python
+# half with the old expectations and gets, say, KeyError: 'edge_domain_len',
+# which tells the user nothing. The handshake turns that into a sentence.
+INTERFACE_VERSION = "2"
 
 
 def versions():
-    """Report backend versions; used by diamondback_check()."""
+    """Report backend versions; used by diamondback_check() and the handshake."""
     import scipy
     import sys
 
@@ -57,6 +69,7 @@ def versions():
         "numpy": np.__version__,
         "scipy": scipy.__version__,
         "algorithm_version": ALGORITHM_VERSION,
+        "interface_version": INTERFACE_VERSION,
     }
 
 

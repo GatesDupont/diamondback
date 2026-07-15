@@ -17,6 +17,11 @@ ALGORITHM_VERSION <- "1"
 # paths, scipy for ndimage.label and distance_transform_edt.
 PY_REQUIREMENTS <- c("numpy>=1.22", "scipy>=1.9")
 
+# Must equal INTERFACE_VERSION in inst/python/diamondback_core.py. Bump both
+# together whenever the R-facing surface of that module changes: function names,
+# signatures, or the keys of a returned dict.
+PY_INTERFACE_VERSION <- "2"
+
 .db_state <- new.env(parent = emptyenv())
 
 #' Where consent to use a managed Python environment is recorded
@@ -180,15 +185,46 @@ diamondback_python <- function(quiet = TRUE) {
     error = function(e) db_python_setup_error(e, mode)
   )
 
+  # Always, not just when reporting: this is the handshake, not a nicety.
+  v <- py_r(py_try(mod$versions(), "reading backend versions"))
+  db_check_interface(v, path)
+
   .db_state$py <- mod
   .db_state$mode <- mode
   if (!quiet) {
-    v <- py_r(py_try(mod$versions(), "reading backend versions"))
     cli::cli_alert_success(
       "diamondback backend ready (Python {v$python}, NumPy {v$numpy}, SciPy {v$scipy})."
     )
   }
   invisible(mod)
+}
+
+#' Refuse to run an R half against a Python half it does not match
+#'
+#' The two are one program in two files, and they can drift apart. By far the
+#' commonest way is a stale R session: the package is reinstalled while a session
+#' still holds the old namespace, so the old R code calls the new Python module.
+#' Without this check the first symptom is something like
+#' `KeyError: 'edge_domain_len'` from deep inside a reduction, which is a
+#' genuinely terrible way to be told to restart R.
+#' @noRd
+db_check_interface <- function(v, path) {
+  got <- v$interface_version %||% "1"
+  if (identical(as.character(got), PY_INTERFACE_VERSION)) {
+    return(invisible(TRUE))
+  }
+  cli::cli_abort(c(
+    "diamondback's R code and its Python module are out of step.",
+    "x" = "The R code expects interface version {.val {PY_INTERFACE_VERSION}}; \\
+           the Python module reports {.val {got}}.",
+    "i" = "This usually means the package was reinstalled or updated while this R \\
+           session had it loaded. R does not replace a namespace that is already \\
+           in memory, so the R half is the old one and the Python half is the new one.",
+    "*" = "Restart R and try again. In RStudio: {.emph Session > Restart R}, \\
+           or {.kbd Ctrl/Cmd+Shift+F10}.",
+    "*" = "If it persists after a restart, reinstall diamondback.",
+    " " = "Python module: {.path {path}}"
+  ), class = "diamondback_interface_mismatch", call = NULL)
 }
 
 # Internal shorthand.
@@ -497,7 +533,8 @@ py_try <- function(expr, what = "a Python computation") {
 #' @param verbose Print a formatted report. The value is returned invisibly
 #'   either way, so this is also usable in scripts.
 #' @return A list with elements `r`, `terra`, `reticulate`, `python`, `numpy`,
-#'   `scipy`, `mode`, `memory_gb`, `test_passed` and `ok`, invisibly.
+#'   `scipy`, `mode`, `interface_version`, `memory_gb`, `test_passed` and `ok`,
+#'   invisibly.
 #' @seealso [diamondback_install_python()]
 #' @export
 #' @examples
@@ -514,6 +551,7 @@ diamondback_check <- function(verbose = TRUE) {
     numpy = NA_character_,
     scipy = NA_character_,
     mode = NA_character_,
+    interface_version = NA_character_,
     memory_gb = tryCatch(db_available_memory() / 1024^3, error = function(e) NA_real_),
     test_passed = FALSE,
     error = NULL
@@ -527,6 +565,7 @@ diamondback_check <- function(verbose = TRUE) {
     out$numpy <- v$numpy
     out$scipy <- v$scipy
     out$mode <- .db_state$mode %||% NA_character_
+    out$interface_version <- v$interface_version %||% NA_character_
     out$python_path <- tryCatch(reticulate::py_config()$python, error = function(e) NA_character_)
 
     # An end-to-end labelling of a known 3x3 case: two 4-connected patches.
