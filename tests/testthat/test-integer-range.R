@@ -84,6 +84,48 @@ test_that("an int64 label array still returns int32 cells to R", {
   expect_type(as.integer(py_r(rows)), "integer")
 })
 
+test_that("the NA sentinel converts cleanly however reticulate hands it over", {
+  # reticulate does not convert numpy int32 the same way on every platform: an
+  # R integer vector (INT_MIN already NA) on macOS and Linux, a double on
+  # Windows. Both are handled, and neither warns. This is pinned for both
+  # shapes because the platform that gets it wrong is not the one this runs on.
+  #
+  # Note there is no way to *write* INT_MIN as an R integer literal --
+  # -2147483648L is silently parsed as a double, because R reserves that bit
+  # pattern for NA_integer_. The integer path therefore arrives already carrying
+  # NA, which is exactly what reticulate hands over.
+  expect_identical(db_int_rows(c(NA_integer_, 5L, 0L)), c(NA_integer_, 5L, 0L))
+  expect_identical(db_int_rows(c(DB_INT32_NA, 5, 0)), c(NA_integer_, 5L, 0L))
+
+  expect_no_warning(db_int_rows(c(DB_INT32_NA, 5, 0)))
+  expect_no_warning(db_int_rows(c(NA_integer_, 5L, 0L)))
+
+  # A value out of integer range that is *not* the sentinel is a real bug, so it
+  # is still allowed to warn rather than being quietly swallowed.
+  expect_warning(db_int_rows(c(5e9, 1)), "NAs introduced")
+})
+
+test_that("labelling a raster with NA cells produces no coercion warnings", {
+  skip_if_no_python()
+  # The regression this guards: every block carrying an NA sentinel emitted
+  # "NAs introduced by coercion to integer range" on Windows -- 42 warnings in
+  # one CI run. The values were right, but only because as.integer(-2147483648)
+  # happens to be NA, and correct-by-warning is not a contract.
+  m <- matrix(rbinom(400, 1, 0.5), 20, 20)
+  m[sample(400, 50)] <- NA
+
+  expect_no_warning(res <- label_patches(rast_from(m), quiet = TRUE))
+
+  f <- withr::local_tempfile(fileext = ".tif")
+  expect_no_warning(label_patches(rast_from(m), output = f, quiet = TRUE))
+  expect_no_warning(patch_domain(res))
+
+  # And the NAs really are NA, not 0 or a large negative number.
+  v <- terra::values(res$patches, mat = FALSE)
+  expect_equal(sum(is.na(v)), 50L)
+  expect_true(all(v[!is.na(v)] >= 0))
+})
+
 test_that("validation reports the ID range as a check", {
   skip_if_no_python()
   v <- validate_patch_result(analyze_patches(matrix(c(1, 0, 0, 1), 2, 2), quiet = TRUE),

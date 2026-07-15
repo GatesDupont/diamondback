@@ -218,7 +218,7 @@ patch_domain <- function(x, filename = NULL, overwrite = FALSE) {
                                   as.integer(b$row - 1L + b$nrows)),
                    "extracting cell states")
     idx <- ((b$row - 1L) * nc + 1L):((b$row - 1L + b$nrows) * nc)
-    vals[idx] <- as.integer(py_r(rows))
+    vals[idx] <- db_int_rows(rows)
   }
   # Every foreground class collapses to a single "patch" level: the point of
   # this raster is the four states, and class identity is in $metrics.

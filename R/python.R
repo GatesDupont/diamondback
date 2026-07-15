@@ -239,6 +239,32 @@ py_get <- function(x, key) reticulate::py_get_item(x, key)
 # py_num(): a numeric vector from one entry of a Python dict.
 py_num <- function(x, key) as.numeric(py_r(py_get(x, key)))
 
+# The no-data sentinel carried in int32 label blocks. It is R's NA_integer_ and
+# the GeoTIFF NAflag, and it is one below the smallest usable patch ID.
+DB_INT32_NA <- -2147483648
+
+#' Convert a block of int32 label cells into an R integer vector
+#'
+#' reticulate does not convert numpy int32 identically on every platform: on
+#' macOS/Linux it yields an R integer vector in which the INT_MIN sentinel has
+#' already become NA_integer_, while on Windows it yields a double. The double
+#' path still *works*, because as.integer(-2147483648) is NA -- but only by way
+#' of an "NAs introduced by coercion to integer range" warning, once per block.
+#' Correct by accident and noisy by design is not a contract worth keeping, so
+#' the sentinel is mapped explicitly here and the platform difference stops at
+#' this function.
+#'
+#' A value that is out of integer range and *not* the sentinel still warns,
+#' because that would be a genuine bug rather than an expected encoding.
+#' @noRd
+db_int_rows <- function(rows) {
+  v <- py_r(rows)
+  if (is.integer(v)) return(as.vector(v))
+  v <- as.vector(as.numeric(v))
+  v[!is.na(v) & v == DB_INT32_NA] <- NA_real_
+  as.integer(v)
+}
+
 db_python_missing_error <- function() {
   cli::cli_abort(
     c(

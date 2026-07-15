@@ -143,7 +143,38 @@ test_that("the fingerprint mode is part of the cache key", {
   expect_match(paste(msgs2, collapse = " "), "Reusing cached result")
 })
 
-test_that("fingerprint = 'full' detects a same-size same-mtime rewrite", {
+test_that("a content change with identical size and mtime is caught by the hash", {
+  # The claim under test is about the cache key, not about the filesystem, so it
+  # is tested on the key directly. Doing it by touching timestamps depends on
+  # Sys.setFileTime() actually restoring an mtime exactly, which is not true
+  # everywhere -- on Windows CI the mtime survived only approximately, the
+  # comparison reported "mtime differs", and the test failed for a reason that
+  # had nothing to do with the behaviour it was checking.
+  base <- list(type = "file", path = "/x/y.tif", size = 1234, mtime = "2026-01-01 00:00:00",
+               hash = "aaaa", fingerprint = "full")
+  meta <- function(src) {
+    list(algorithm_version = "1", source = src, mask_source = NULL,
+         geometry = list(nrow = 2, ncol = 2, xmin = 0, xmax = 20, ymin = 0,
+                         ymax = 20, xres = 10, yres = 10, crs = "x"),
+         class = NA_real_, binary = TRUE, directions = 8, na = "outside",
+         crop = FALSE)
+  }
+
+  same <- meta(base)
+  expect_true(isTRUE(db_cache_match(same, same)))
+
+  # Identical size and mtime, different contents: only the hash can tell.
+  changed <- base; changed$hash <- "bbbb"
+  expect_equal(db_cache_match(meta(base), meta(changed)), "source$hash")
+
+  # And under "fast" there is no hash to compare, so such a change is invisible.
+  # That is the documented trade-off, pinned here so it cannot drift silently.
+  fast_a <- base; fast_a$fingerprint <- "fast"; fast_a$hash <- NA_character_
+  fast_b <- fast_a
+  expect_true(isTRUE(db_cache_match(meta(fast_a), meta(fast_b))))
+})
+
+test_that("fingerprint = 'full' rereads contents when a file is rewritten", {
   skip_if_no_python()
   f <- withr::local_tempfile(fileext = ".tif")
   d <- withr::local_tempdir()
@@ -153,13 +184,17 @@ test_that("fingerprint = 'full' detects a same-size same-mtime rewrite", {
   analyze_patches(f, output_dir = d, fingerprint = "full", quiet = TRUE)
   mt <- file.info(f)$mtime
 
-  # Same dimensions and dtype -> same file size; restore the timestamp too.
+  # Same dimensions and dtype -> same file size; try to restore the timestamp.
   r2 <- rast_from(matrix(c(1, 1, 1, 1), 2, 2))
   terra::writeRaster(r2, f, overwrite = TRUE)
   Sys.setFileTime(f, mt)
 
-  # "full" reads the contents, so it must notice even though size and mtime
-  # are unchanged.
+  # Not every filesystem restores an mtime exactly. When it does, the hash is
+  # the only thing that can notice the change, and that is what we check. When
+  # it does not, the premise is gone and the test would be checking nothing.
+  restored <- isTRUE(all.equal(as.character(file.info(f)$mtime), as.character(mt)))
+  skip_if_not(restored, "filesystem did not restore the mtime exactly")
+
   msgs <- capture.output(
     analyze_patches(f, output_dir = d, fingerprint = "full", quiet = FALSE),
     type = "message")

@@ -391,7 +391,7 @@ db_labels_to_rast <- function(py, labels, code, template, output, overwrite,
         "extracting labelled cells"
       )
       idx <- ((b$row - 1L) * nc + 1L):((b$row - 1L + b$nrows) * nc)
-      vals[idx] <- as.integer(py_r(rows))
+      vals[idx] <- db_int_rows(rows)
     }
     terra::values(out_r) <- vals
     return(list(obj = out_r, path = NULL))
@@ -427,7 +427,7 @@ db_labels_to_rast <- function(py, labels, code, template, output, overwrite,
   }, add = TRUE)
 
   terra::writeStart(out_r, filename = tmp, overwrite = TRUE,
-                    datatype = "INT4S", NAflag = -2147483648)
+                    datatype = "INT4S", NAflag = DB_INT32_NA)
   pb <- db_progress("Writing raster", length(blocks), quiet = quiet)
   for (i in seq_along(blocks)) {
     b <- blocks[[i]]
@@ -436,7 +436,7 @@ db_labels_to_rast <- function(py, labels, code, template, output, overwrite,
                      as.integer(b$row - 1L + b$nrows), na_background),
       "extracting labelled cells"
     )
-    terra::writeValues(out_r, as.integer(py_r(rows)), b$row, b$nrows)
+    terra::writeValues(out_r, db_int_rows(rows), b$row, b$nrows)
     db_progress_step(pb, i)
   }
   terra::writeStop(out_r)

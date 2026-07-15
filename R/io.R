@@ -56,7 +56,7 @@ write_patch_result <- function(x, dir, overwrite = FALSE, quiet = FALSE) {
     r <- db_patches(x)
     db_register_file(f_lab)
     terra::writeRaster(r, f_lab, overwrite = TRUE, datatype = "INT4S",
-                       NAflag = -2147483648)
+                       NAflag = DB_INT32_NA)
   }
 
   utils::write.csv(.subset2(x, "metrics"), f_met, row.names = FALSE)

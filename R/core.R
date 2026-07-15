@@ -195,7 +195,7 @@ db_core_to_rast <- function(py, labels, core_mask, template) {
       reticulate::import_builtins(convert = FALSE)$slice(
         as.integer(b$row - 1L), as.integer(b$row - 1L + b$nrows))
     ])$astype(np$int32)$ravel(), "extracting core cells")
-    vals[idx] <- as.integer(reticulate::py_to_r(rows))
+    vals[idx] <- db_int_rows(rows)
   }
   terra::values(out) <- vals
   names(out) <- "core_patch_id"
